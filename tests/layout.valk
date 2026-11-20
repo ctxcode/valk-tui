@@ -1,0 +1,79 @@
+use tui
+
+test "Layout fixed and weighted fill constraints" {
+    let area = tui.Rect.new(0, 0, 40, 10)
+    let chunks = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.fixed(10),
+        tui.Constraint.fill(1),
+        tui.Constraint.fill(2)
+    }).split(area)
+
+    assert(chunks.length == 3)
+    assert(chunks[0] == tui.Rect.new(0, 0, 10, 10))
+    assert(chunks[1] == tui.Rect.new(10, 0, 10, 10))
+    assert(chunks[2] == tui.Rect.new(20, 0, 20, 10))
+
+    // Odd remainder distributes cleanly so total equals available space
+    let odd = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.fill(1),
+        tui.Constraint.fill(1)
+    }).split(tui.Rect.new(0, 0, 11, 5))
+    assert(odd[0].width == 6 && odd[1].width == 5)
+    assert(odd[0].width + odd[1].width == 11)
+}
+
+test "Layout percent, min, and max constraints" {
+    let area = tui.Rect.new(0, 0, 80, 20)
+    let pcts = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.percent(25),
+        tui.Constraint.percent(75)
+    }).split(area)
+    assert(pcts[0].width == 20 && pcts[1].width == 60)
+
+    // min expands into leftover space when there is no fill
+    let mins = tui.Layout.vertical(Array[tui.Constraint]{
+        tui.Constraint.min(5),
+        tui.Constraint.fixed(5)
+    }).split(area)
+    assert(mins[0] == tui.Rect.new(0, 0, 80, 15))
+    assert(mins[1] == tui.Rect.new(0, 15, 80, 5))
+
+    // min stays at its minimum when fill absorbs remaining space
+    let min_fill = tui.Layout.vertical(Array[tui.Constraint]{
+        tui.Constraint.min(5),
+        tui.Constraint.fill(1)
+    }).split(area)
+    assert(min_fill[0].height == 5 && min_fill[1].height == 15)
+
+    // max caps at its limit, and multiple maxes water-fill evenly
+    let max_fill = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.max(15),
+        tui.Constraint.fill(1)
+    }).split(tui.Rect.new(0, 0, 40, 10))
+    assert(max_fill[0].width == 15 && max_fill[1].width == 25)
+
+    let max_pair = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.max(5),
+        tui.Constraint.max(20)
+    }).split(tui.Rect.new(0, 0, 20, 10))
+    assert(max_pair[0].width == 5 && max_pair[1].width == 15)
+}
+
+test "Layout gaps, margins, and narrow clamping" {
+    let area = tui.Rect.new(0, 0, 30, 12)
+    let chunks = tui.Layout.horizontal(Array[tui.Constraint]{
+        tui.Constraint.fixed(10),
+        tui.Constraint.fill(1)
+    }).with_gap(2).with_margin(tui.Margin.xy(2, 1)).split(area)
+
+    // Inner width = 30 - 4 = 26; minus gap 2 = 24 -> 10 + 14
+    assert(chunks[0] == tui.Rect.new(2, 1, 10, 10))
+    assert(chunks[1] == tui.Rect.new(14, 1, 14, 10))
+
+    // Over-constrained narrow area clamps without underflow
+    let tiny = tui.Layout.vertical(Array[tui.Constraint]{
+        tui.Constraint.fixed(10),
+        tui.Constraint.fixed(10)
+    }).with_gap(5).split(tui.Rect.new(0, 0, 10, 3))
+    assert(tiny[0].height == 0 && tiny[1].height == 0)
+}

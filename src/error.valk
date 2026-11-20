@@ -1,0 +1,10 @@
+
+/// Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
+///
+/// - `not_a_tty`: the file descriptor is not connected to a terminal.
+/// - `terminal_init`: setting up or restoring raw mode failed.
+/// - `io_error`: reading from or writing to the terminal failed.
+/// - `unsupported`: the operation is not supported on this platform.
++ error TuiError (not_a_tty, terminal_init, io_error, unsupported) payload {
+    message: String
+}

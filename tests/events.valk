@@ -1,0 +1,228 @@
+use tui
+
+test "ASCII and UTF-8 character events" {
+    let events = tui.EventParser.parse_string("aZ é中🚀")
+    assert(events.length == 6)
+
+    let e0 = events[0].as_key() ?! { assert(false) return }
+    assert(e0.key == .char && e0.text == "a" && e0.codepoint == 'a' && e0.modifiers.is_empty())
+
+    let e1 = events[1].as_key() ?! { assert(false) return }
+    assert(e1.key == .char && e1.text == "Z" && e1.codepoint == 'Z')
+
+    let e2 = events[2].as_key() ?! { assert(false) return }
+    assert(e2.key == .char && e2.text == " " && e2.codepoint == ' ')
+
+    let e3 = events[3].as_key() ?! { assert(false) return }
+    assert(e3.key == .char && e3.text == "é" && e3.codepoint == 0x00e9)
+
+    let e4 = events[4].as_key() ?! { assert(false) return }
+    assert(e4.key == .char && e4.text == "中" && e4.codepoint == 0x4e2d)
+
+    let e5 = events[5].as_key() ?! { assert(false) return }
+    assert(e5.key == .char && e5.text == "🚀" && e5.codepoint == 0x1f680)
+}
+
+test "Chunked multibyte UTF-8 stream" {
+    let parser = tui.EventParser.new()
+    // "🚀" is 4 UTF-8 bytes: F0 9F 9A 80
+    let rocket = "🚀"
+    parser.feed(rocket.view(0, 2))
+    assert(!isset(parser.next()))
+    parser.feed(rocket.view(2, 2))
+    let ev = parser.next() ?! { assert(false) return }
+    let key = ev.as_key() ?! { assert(false) return }
+    assert(key.key == .char && key.text == "🚀" && key.codepoint == 0x1f680)
+}
+
+test "Control keys and special ASCII bytes" {
+    let events = tui.EventParser.parse_string("\x01\x03\x1a\r\n\t\x7f\x08\x00")
+    assert(events.length == 9)
+
+    let ca = events[0].as_key() ?! { assert(false) return }
+    assert(ca.is_ctrl('a') && ca.text == "a")
+
+    let cc = events[1].as_key() ?! { assert(false) return }
+    assert(cc.is_ctrl('c') && cc.text == "c")
+
+    let cz = events[2].as_key() ?! { assert(false) return }
+    assert(cz.is_ctrl('z') && cz.text == "z")
+
+    let cr = events[3].as_key() ?! { assert(false) return }
+    assert(cr.key == .enter)
+
+    let lf = events[4].as_key() ?! { assert(false) return }
+    assert(lf.key == .enter)
+
+    let tab = events[5].as_key() ?! { assert(false) return }
+    assert(tab.key == .tab)
+
+    let bs1 = events[6].as_key() ?! { assert(false) return }
+    assert(bs1.key == .backspace)
+
+    let bs2 = events[7].as_key() ?! { assert(false) return }
+    assert(bs2.key == .backspace)
+
+    let cspace = events[8].as_key() ?! { assert(false) return }
+    assert(cspace.is_ctrl(' ') && cspace.text == " ")
+}
+
+test "Alt combinations and Escape key" {
+    let parser = tui.EventParser.new()
+    parser.feed_string("\x1b")
+    // Bare ESC waits until flush_escape()
+    assert(!isset(parser.next()))
+    let esc_ev = parser.flush_escape() ?! { assert(false) return }
+    let esc_k = esc_ev.as_key() ?! { assert(false) return }
+    assert(esc_k.key == .esc && esc_k.modifiers.is_empty())
+
+    let events = tui.EventParser.parse_string("\x1bx\x1bé\x1b\x04\x1b\x1b")
+    assert(events.length == 5)
+
+    let ax = events[0].as_key() ?! { assert(false) return }
+    assert(ax.key == .char && ax.text == "x" && ax.modifiers.alt && !ax.modifiers.ctrl)
+
+    let ae = events[1].as_key() ?! { assert(false) return }
+    assert(ae.key == .char && ae.text == "é" && ae.modifiers.alt)
+
+    let acd = events[2].as_key() ?! { assert(false) return }
+    assert(acd.key == .char && acd.text == "d" && acd.modifiers.alt && acd.modifiers.ctrl)
+
+    let e1 = events[3].as_key() ?! { assert(false) return }
+    assert(e1.key == .esc)
+    let e2 = events[4].as_key() ?! { assert(false) return }
+    assert(e2.key == .esc)
+}
+
+test "Navigation, arrows, backtab, and F1-F12 keys" {
+    let raw = "\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1b[Z"
+        + "\x1b[2~\x1b[3~\x1b[5~\x1b[6~\x1b[1~\x1b[4~"
+        + "\x1bOP\x1bOQ\x1bOR\x1bOS"
+        + "\x1b[15~\x1b[17~\x1b[18~\x1b[19~\x1b[20~\x1b[21~\x1b[23~\x1b[24~"
+    let events = tui.EventParser.parse_string(raw)
+    assert(events.length == 25)
+
+    let expected = Array[tui.Key]{
+        .up, .down, .right, .left, .home, .end, .backtab,
+        .insert, .delete, .page_up, .page_down, .home, .end,
+        .f1, .f2, .f3, .f4,
+        .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12
+    }
+    let i: uint = 0
+    while i < expected.length {
+        let k = events[i].as_key() ?! { assert(false) return }
+        assert(k.key == expected[i])
+        i++
+    }
+    let bt = events[6].as_key() ?! { assert(false) return }
+    assert(bt.modifiers.shift)
+}
+
+test "CSI modifier combinations and Kitty protocol" {
+    // Shift+Up (2), Alt+Right (3), Ctrl+Left (5), Shift+Ctrl+Down (6), Shift+Alt+Ctrl+Home (8), Ctrl+Delete
+    let events = tui.EventParser.parse_string(
+        "\x1b[1;2A\x1b[1;3C\x1b[1;5D\x1b[1;6B\x1b[1;8H\x1b[3;5~\x1b[97;5u\x1b[13;2u"
+    )
+    assert(events.length == 8)
+
+    let k0 = events[0].as_key() ?! { assert(false) return }
+    assert(k0.key == .up && k0.modifiers.shift && !k0.modifiers.alt && !k0.modifiers.ctrl)
+
+    let k1 = events[1].as_key() ?! { assert(false) return }
+    assert(k1.key == .right && !k1.modifiers.shift && k1.modifiers.alt && !k1.modifiers.ctrl)
+
+    let k2 = events[2].as_key() ?! { assert(false) return }
+    assert(k2.key == .left && !k2.modifiers.shift && !k2.modifiers.alt && k2.modifiers.ctrl)
+
+    let k3 = events[3].as_key() ?! { assert(false) return }
+    assert(k3.key == .down && k3.modifiers.shift && !k3.modifiers.alt && k3.modifiers.ctrl)
+
+    let k4 = events[4].as_key() ?! { assert(false) return }
+    assert(k4.key == .home && k4.modifiers.shift && k4.modifiers.alt && k4.modifiers.ctrl)
+
+    let k5 = events[5].as_key() ?! { assert(false) return }
+    assert(k5.key == .delete && k5.modifiers.ctrl)
+
+    // Kitty Ctrl+a
+    let k6 = events[6].as_key() ?! { assert(false) return }
+    assert(k6.key == .char && k6.text == "a" && k6.modifiers.ctrl)
+
+    // Kitty Shift+Enter
+    let k7 = events[7].as_key() ?! { assert(false) return }
+    assert(k7.key == .enter && k7.modifiers.shift)
+}
+
+test "SGR 1006 mouse events" {
+    // Left down at (10,5), left release at (10,5), middle down with Ctrl+Shift at (1,1),
+    // left drag (32) at (12,6), move (35) at (15,8), scroll up (64), scroll down (65)
+    let raw = "\x1b[<0;11;6M\x1b[<0;11;6m\x1b[<21;1;1M\x1b[<32;13;7M\x1b[<35;16;9M\x1b[<64;5;5M\x1b[<65;5;5M"
+    let events = tui.EventParser.parse_string(raw)
+    assert(events.length == 7)
+
+    let m0 = events[0].as_mouse() ?! { assert(false) return }
+    assert(m0.kind == .down && m0.button == .left && m0.x == 10 && m0.y == 5 && m0.modifiers.is_empty())
+
+    let m1 = events[1].as_mouse() ?! { assert(false) return }
+    assert(m1.kind == .up && m1.button == .left && m1.x == 10 && m1.y == 5)
+
+    // cb = 21 = 1 (middle) | 4 (shift) | 16 (ctrl)
+    let m2 = events[2].as_mouse() ?! { assert(false) return }
+    assert(m2.kind == .down && m2.button == .middle && m2.x == 0 && m2.y == 0)
+    assert(m2.modifiers.shift && m2.modifiers.ctrl && !m2.modifiers.alt)
+
+    let m3 = events[3].as_mouse() ?! { assert(false) return }
+    assert(m3.kind == .drag && m3.button == .left && m3.x == 12 && m3.y == 6)
+
+    let m4 = events[4].as_mouse() ?! { assert(false) return }
+    assert(m4.kind == .move && m4.button == .none && m4.x == 15 && m4.y == 8)
+
+    let m5 = events[5].as_mouse() ?! { assert(false) return }
+    assert(m5.kind == .scroll_up && m5.button == .none && m5.x == 4 && m5.y == 4)
+
+    let m6 = events[6].as_mouse() ?! { assert(false) return }
+    assert(m6.kind == .scroll_down && m6.button == .none && m6.x == 4 && m6.y == 4)
+}
+
+test "Bracketed paste including chunked streams" {
+    let events = tui.EventParser.parse_string("\x1b[200~hello\nworld 🚀\x1b[201~x")
+    assert(events.length == 2)
+
+    let p = events[0].as_paste() ?! { assert(false) return }
+    assert(p.text == "hello\nworld 🚀")
+
+    let after = events[1].as_key() ?! { assert(false) return }
+    assert(after.is_char("x"))
+
+    // Chunked across the end marker ESC[201~
+    let parser = tui.EventParser.new()
+    parser.feed_string("\x1b[200~part1 ")
+    assert(!isset(parser.next()))
+    parser.feed_string("part2\x1b[20")
+    assert(!isset(parser.next()))
+    parser.feed_string("1~")
+    let ev = parser.next() ?! { assert(false) return }
+    let pasted = ev.as_paste() ?! { assert(false) return }
+    assert(pasted.text == "part1 part2")
+}
+
+test "SS3 navigation, modified F1-F4, and partial CSI buffering" {
+    let events = tui.EventParser.parse_string("\x1bOA\x1bOB\x1bOC\x1bOD\x1bOH\x1bOF\x1b[1;2P\x1b[1;5S")
+    assert(events.length == 8)
+
+    let a0 = events[0].as_key() ?! { assert(false) return }
+    let a5 = events[5].as_key() ?! { assert(false) return }
+    let f1s = events[6].as_key() ?! { assert(false) return }
+    let f4c = events[7].as_key() ?! { assert(false) return }
+    assert(a0.key == .up && a5.key == .end)
+    assert(f1s.key == .f1 && f1s.modifiers.shift)
+    assert(f4c.key == .f4 && f4c.modifiers.ctrl)
+
+    // Partial CSI delivered in two chunks
+    let parser = tui.EventParser.new()
+    parser.feed_string("\x1b[1;5")
+    assert(!isset(parser.next()))
+    parser.feed_string("C")
+    let ev = parser.next() ?! { assert(false) return }
+    let k = ev.as_key() ?! { assert(false) return }
+    assert(k.key == .right && k.modifiers.ctrl)
+}

@@ -1,0 +1,277 @@
+
+/// Axis along which a `Layout` splits an area.
++ enum Direction {
+    /// Split left-to-right into columns.
+    horizontal
+    /// Split top-to-bottom into rows.
+    vertical
+}
+
+/// Kind of sizing rule for a `Constraint`.
++ enum ConstraintKind {
+    /// Exact size in cells.
+    fixed
+    /// Percentage (`0..100`) of available space after gaps and margins.
+    percent
+    /// At least `value` cells; expands into leftover space when no `fill` items are present.
+    min
+    /// Up to `value` cells from remaining space.
+    max
+    /// Proportional share of remaining space weighted by `value`.
+    fill
+}
+
+/// Sizing constraint for a single child slot in a `Layout`.
++ struct Constraint {
+    /// Constraint kind.
+    + kind: ConstraintKind
+    /// Numeric parameter (cells, percentage, or fill weight).
+    + value: uint
+
+    /// Exact size of `n` cells.
+    + static fn fixed(n: uint) Constraint {
+        return Constraint { kind: .fixed, value: n }
+    }
+
+    /// `p` percent (`0..100`) of the available space.
+    + static fn percent(p: uint) Constraint {
+        return Constraint { kind: .percent, value: p > 100 ? 100 : p }
+    }
+
+    /// At least `n` cells.
+    + static fn min(n: uint) Constraint {
+        return Constraint { kind: .min, value: n }
+    }
+
+    /// At most `n` cells.
+    + static fn max(n: uint) Constraint {
+        return Constraint { kind: .max, value: n }
+    }
+
+    /// Proportional share of remaining space with the given `weight` (defaults to `1`).
+    + static fn fill(weight: uint (1)) Constraint {
+        return Constraint { kind: .fill, value: weight }
+    }
+}
+
+/// Outer inset around a `Layout` or widget area.
++ struct Margin {
+    /// Top margin in rows.
+    + top: uint (0)
+    /// Right margin in columns.
+    + right: uint (0)
+    /// Bottom margin in rows.
+    + bottom: uint (0)
+    /// Left margin in columns.
+    + left: uint (0)
+
+    /// Uniform margin on all four sides.
+    + static fn all(n: uint) Margin {
+        return Margin { top: n, right: n, bottom: n, left: n }
+    }
+
+    /// Symmetric horizontal and vertical margins.
+    + static fn xy(horizontal: uint, vertical: uint) Margin {
+        return Margin { top: vertical, right: horizontal, bottom: vertical, left: horizontal }
+    }
+
+    /// Explicit margin for each side.
+    + static fn new(top: uint, right: uint, bottom: uint, left: uint) Margin {
+        return Margin { top: top, right: right, bottom: bottom, left: left }
+    }
+}
+
+/// Splits a `Rect` horizontally or vertically according to `Constraint`s, optional `gap`,
+/// and `margin`.
++ class Layout {
+    /// Split axis (`horizontal` or `vertical`).
+    + direction: Direction (.vertical)
+    /// Sizing constraints for each resulting slot.
+    + constraints: Array[Constraint] (.{})
+    /// Empty cells inserted between adjacent slots.
+    + gap: uint (0)
+    /// Outer margin inset before splitting.
+    + margin: Margin (.{})
+
+    /// Creates a horizontal (left-to-right) layout with `constraints`.
+    + static fn horizontal(constraints: Array[Constraint]) Layout {
+        return Layout { direction: .horizontal, constraints: constraints }
+    }
+
+    /// Creates a vertical (top-to-bottom) layout with `constraints`.
+    + static fn vertical(constraints: Array[Constraint]) Layout {
+        return Layout { direction: .vertical, constraints: constraints }
+    }
+
+    /// Sets the gap in cells between adjacent slots and returns `this`.
+    + fn with_gap(gap: uint) Layout {
+        this.gap = gap
+        return this
+    }
+
+    /// Sets the outer margin and returns `this`.
+    + fn with_margin(margin: Margin) Layout {
+        this.margin = margin
+        return this
+    }
+
+    /// Sets a uniform outer margin on all four sides and returns `this`.
+    + fn with_margin_all(n: uint) Layout {
+        this.margin = Margin.all(n)
+        return this
+    }
+
+    /// Computes child `Rect`s for every constraint within `area`.
+    + fn split(area: Rect) Array[Rect] {
+        let count = this.constraints.length
+        let out = Array[Rect].new(count)
+        if count == 0 : return out
+
+        let inner = area.inner_margins(this.margin.top, this.margin.right, this.margin.bottom, this.margin.left)
+        let total_space = this.direction == .horizontal ? inner.width : inner.height
+        let total_gaps = this.gap * (count - 1)
+        let avail = total_space > total_gaps ? total_space - total_gaps : 0
+
+        let sizes = Array[uint].new(count)
+        let i: uint = 0
+        while i < count {
+            sizes.append(0)
+            i++
+        }
+
+        let remaining = avail
+
+        // Pass 1: allocate fixed, percent, and minimum base sizes
+        i = 0
+        while i < count {
+            let c = this.constraints[i]
+            let want: uint = 0
+            if c.kind == .fixed {
+                want = c.value
+            } else if c.kind == .percent {
+                let pct = c.value > 100 ? 100 : c.value
+                want = (avail * pct) / 100
+            } else if c.kind == .min {
+                want = c.value
+            }
+            if want > 0 {
+                let take = want < remaining ? want : remaining
+                sizes[i] = take
+                remaining -= take
+            }
+            i++
+        }
+
+        // Pass 2: water-fill `max(n)` constraints up to their caps
+        while remaining > 0 {
+            let active: uint = 0
+            i = 0
+            while i < count {
+                let c = this.constraints[i]
+                if c.kind == .max && sizes[i] < c.value : active++
+                i++
+            }
+            if active == 0 : break
+
+            let share = remaining / active
+            let extra = remaining % active
+            let progressed = false
+            i = 0
+            while i < count && remaining > 0 {
+                let c = this.constraints[i]
+                if c.kind == .max && sizes[i] < c.value {
+                    let offer = share
+                    if extra > 0 {
+                        offer++
+                        extra--
+                    }
+                    if offer == 0 : offer = 1
+                    let room = c.value - sizes[i]
+                    let add = offer < room ? offer : room
+                    if add > remaining : add = remaining
+                    sizes[i] = sizes[i] + add
+                    remaining -= add
+                    progressed = true
+                }
+                i++
+            }
+            if !progressed : break
+        }
+
+        // Pass 3: distribute remaining space across `fill(weight)` constraints
+        let total_weight: uint = 0
+        i = 0
+        while i < count {
+            let c = this.constraints[i]
+            if c.kind == .fill : total_weight += c.value
+            i++
+        }
+
+        if remaining > 0 && total_weight > 0 {
+            let pool = remaining
+            let distributed: uint = 0
+            i = 0
+            while i < count {
+                let c = this.constraints[i]
+                if c.kind == .fill && c.value > 0 {
+                    let add = (pool * c.value) / total_weight
+                    sizes[i] = sizes[i] + add
+                    distributed += add
+                }
+                i++
+            }
+            let leftover = pool - distributed
+            i = 0
+            while i < count && leftover > 0 {
+                let c = this.constraints[i]
+                if c.kind == .fill && c.value > 0 {
+                    sizes[i] = sizes[i] + 1
+                    leftover--
+                }
+                i++
+            }
+            remaining = 0
+        }
+
+        // Pass 4: if space still remains (no fill items), expand `min(n)` constraints evenly
+        if remaining > 0 {
+            let min_count: uint = 0
+            i = 0
+            while i < count {
+                if this.constraints[i].kind == .min : min_count++
+                i++
+            }
+            if min_count > 0 {
+                let share = remaining / min_count
+                let extra = remaining % min_count
+                i = 0
+                while i < count {
+                    if this.constraints[i].kind == .min {
+                        let add = share
+                        if extra > 0 {
+                            add++
+                            extra--
+                        }
+                        sizes[i] = sizes[i] + add
+                    }
+                    i++
+                }
+            }
+        }
+
+        // Materialize child Rects along the chosen axis
+        let cursor = this.direction == .horizontal ? inner.x : inner.y
+        i = 0
+        while i < count {
+            let sz = sizes[i]
+            if this.direction == .horizontal {
+                out.append(Rect.new(cursor, inner.y, sz, inner.height))
+            } else {
+                out.append(Rect.new(inner.x, cursor, inner.width, sz))
+            }
+            cursor += sz + this.gap
+            i++
+        }
+        return out
+    }
+}

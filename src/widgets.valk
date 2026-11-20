@@ -1,0 +1,1046 @@
+
+/// Interface implemented by all renderable UI components.
++ interface Widget {
+    /// Draws this widget into `buf` within the bounding rectangle `area`.
+    + fn render(area: Rect, buf: Buffer);
+}
+
+/// Horizontal text alignment used by `Block` titles and `Paragraph` lines.
++ enum Alignment {
+    /// Align to the left edge.
+    left
+    /// Center horizontally within the available width.
+    center
+    /// Align to the right edge.
+    right
+}
+
+/// Box-drawing border style for a `Block`.
++ enum BorderType {
+    /// No border.
+    none
+    /// Single-line box drawing (`┌─┐│└┘`).
+    plain
+    /// Rounded corners (`╭─╮│╰╯`).
+    rounded
+    /// Double-line box drawing (`╔═╗║╚╝`).
+    double
+    /// Heavy / thick box drawing (`┏━┓┃┗┛`).
+    thick
+}
+
+/// Inner padding inside a `Block`.
++ struct Padding {
+    /// Top padding in rows.
+    + top: uint (0)
+    /// Right padding in columns.
+    + right: uint (0)
+    /// Bottom padding in rows.
+    + bottom: uint (0)
+    /// Left padding in columns.
+    + left: uint (0)
+
+    /// Uniform padding on all four sides.
+    + static fn all(n: uint) Padding {
+        return Padding { top: n, right: n, bottom: n, left: n }
+    }
+
+    /// Symmetric horizontal and vertical padding.
+    + static fn xy(horizontal: uint, vertical: uint) Padding {
+        return Padding { top: vertical, right: horizontal, bottom: vertical, left: horizontal }
+    }
+}
+
+struct BorderChars {
+    top_left: String
+    top_right: String
+    bottom_left: String
+    bottom_right: String
+    horizontal: String
+    vertical: String
+}
+
+fn border_chars(kind: BorderType) BorderChars {
+    if kind == .rounded {
+        return BorderChars {
+            top_left: "╭", top_right: "╮", bottom_left: "╰", bottom_right: "╯",
+            horizontal: "─", vertical: "│"
+        }
+    }
+    if kind == .double {
+        return BorderChars {
+            top_left: "╔", top_right: "╗", bottom_left: "╚", bottom_right: "╝",
+            horizontal: "═", vertical: "║"
+        }
+    }
+    if kind == .thick {
+        return BorderChars {
+            top_left: "┏", top_right: "┓", bottom_left: "┗", bottom_right: "┛",
+            horizontal: "━", vertical: "┃"
+        }
+    }
+    return BorderChars {
+        top_left: "┌", top_right: "┐", bottom_left: "└", bottom_right: "┘",
+        horizontal: "─", vertical: "│"
+    }
+}
+
+fn aligned_x(base_x: uint, width: uint, content_width: uint, alignment: Alignment) uint {
+    if content_width >= width : return base_x
+    if alignment == .center : return base_x + (width - content_width) / 2
+    if alignment == .right : return base_x + (width - content_width)
+    return base_x
+}
+
+/// A container widget that draws an optional border, title, background fill, and inner padding.
++ class Block is Widget {
+    /// Optional title drawn on the top edge.
+    + title: String ("")
+    /// Horizontal alignment of `title`.
+    + title_alignment: Alignment (.left)
+    /// Style applied to `title` (patched on top of `border_style`).
+    + title_style: Style (.{})
+    /// Border drawing style (`none`, `plain`, `rounded`, `double`, `thick`).
+    + borders: BorderType (.plain)
+    /// Style applied to the border characters.
+    + border_style: Style (.{})
+    /// Base background/foreground style filled across the entire block area.
+    + style: Style (.{})
+    /// Inner padding inside the border.
+    + padding: Padding (.{})
+
+    /// Returns the content `Rect` inside this block's border and padding.
+    + fn inner(area: Rect) Rect {
+        let b: uint = this.borders == .none ? 0 : 1
+        return area.inner_margins(
+            b + this.padding.top,
+            b + this.padding.right,
+            b + this.padding.bottom,
+            b + this.padding.left
+        )
+    }
+
+    /// Renders the block background, border, and title into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let clip = buf.area.intersection(area)
+        if clip.is_empty() : return
+
+        if !this.style.is_default() {
+            buf.fill(clip, " ", this.style)
+        }
+
+        let bstyle = this.style.patch(this.border_style)
+        let tstyle = bstyle.patch(this.title_style)
+
+        if this.borders != .none {
+            let chars = border_chars(this.borders)
+            let x1 = area.x
+            let y1 = area.y
+            let x2 = area.right() - 1
+            let y2 = area.bottom() - 1
+
+            // Horizontal edges
+            let x = x1
+            while x <= x2 {
+                buf.set_cell(x, y1, chars.horizontal, bstyle)
+                if y2 > y1 : buf.set_cell(x, y2, chars.horizontal, bstyle)
+                x++
+            }
+            // Vertical edges
+            let y = y1
+            while y <= y2 {
+                buf.set_cell(x1, y, chars.vertical, bstyle)
+                if x2 > x1 : buf.set_cell(x2, y, chars.vertical, bstyle)
+                y++
+            }
+            // Corners
+            buf.set_cell(x1, y1, chars.top_left, bstyle)
+            if x2 > x1 : buf.set_cell(x2, y1, chars.top_right, bstyle)
+            if y2 > y1 : buf.set_cell(x1, y2, chars.bottom_left, bstyle)
+            if x2 > x1 && y2 > y1 : buf.set_cell(x2, y2, chars.bottom_right, bstyle)
+        }
+
+        if this.title.bytes > 0 {
+            let inset: uint = this.borders == .none ? 0 : 1
+            if area.width > inset * 2 {
+                let max_w = area.width - inset * 2
+                let tw = string_width(this.title)
+                let tx = aligned_x(area.x + inset, max_w, tw, this.title_alignment)
+                buf.set_string_clipped(tx, area.y, max_w, this.title, tstyle)
+            }
+        }
+    }
+}
+
+/// Multi-line text widget supporting word wrapping, alignment, vertical scrolling, and an optional `Block`.
++ class Paragraph is Widget {
+    /// Text content (may contain `\n` line breaks).
+    + text: String ("")
+    /// Style applied to the text.
+    + style: Style (.{})
+    /// Horizontal alignment of each visual line.
+    + alignment: Alignment (.left)
+    /// Whether lines wrap at word boundaries to fit the available width.
+    + wrap: bool (true)
+    /// Number of visual lines to skip from the top.
+    + scroll: uint (0)
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Creates a `Paragraph` with the given `text`.
+    + static fn new(text: String) Paragraph {
+        return Paragraph { text: text }
+    }
+
+    /// Computes the wrapped visual lines for `max_width` columns.
+    + fn wrapped_lines(max_width: uint) Array[String] {
+        let lines = Array[String].new()
+        if max_width == 0 : return lines
+
+        let raw_lines = split_lines(this.text)
+        each raw_lines as raw {
+            if !this.wrap {
+                lines.append(raw)
+                continue
+            }
+            wrap_single_line(raw, max_width, lines)
+        }
+        return lines
+    }
+
+    /// Renders the paragraph into `buf` within `area`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        if !this.style.is_default() {
+            buf.fill(inner, " ", this.style)
+        }
+
+        let lines = this.wrapped_lines(inner.width)
+        let row: uint = 0
+        while row < inner.height {
+            let idx = this.scroll + row
+            if idx >= lines.length : break
+            let line = lines[idx]
+            let lw = string_width(line)
+            let x = aligned_x(inner.x, inner.width, lw, this.alignment)
+            buf.set_string_clipped(x, inner.y + row, inner.width, line, this.style)
+            row++
+        }
+    }
+}
+
+fn split_lines(text: String) Array[String] {
+    let out = Array[String].new()
+    let len = text.bytes
+    let start: uint = 0
+    let i: uint = 0
+    while i < len {
+        if text[i] == '\n' {
+            let end = i
+            if end > start && text[end - 1] == '\r' : end--
+            out.append(text.range(start, end - start))
+            start = i + 1
+        }
+        i++
+    }
+    let tail_end = len
+    if tail_end > start && text[tail_end - 1] == '\r' : tail_end--
+    out.append(text.range(start, tail_end - start))
+    return out
+}
+
+fn wrap_single_line(line: String, max_width: uint, out: Array[String]) {
+    if line.bytes == 0 {
+        out.append("")
+        return
+    }
+    if string_width(line) <= max_width {
+        out.append(line)
+        return
+    }
+
+    // Split into words separated by ASCII spaces while preserving wrapping cleanly
+    let words = Array[String].new()
+    let len = line.bytes
+    let pos: uint = 0
+    while pos < len {
+        while pos < len && line[pos] == ' ' : pos++
+        if pos >= len : break
+        let wstart = pos
+        while pos < len && line[pos] != ' ' : pos++
+        words.append(line.range(wstart, pos - wstart))
+    }
+
+    if words.length == 0 {
+        out.append("")
+        return
+    }
+
+    let current = ByteBuffer.new(max_width)
+    let cur_w: uint = 0
+
+    each words as word {
+        let ww = string_width(word)
+        if cur_w == 0 {
+            if ww <= max_width {
+                current.write(word)
+                cur_w = ww
+            } else {
+                // Hard-break a single word longer than max_width
+                push_broken_word(word, max_width, out, current)
+                cur_w = string_width(current.to_string())
+            }
+        } else if cur_w + 1 + ww <= max_width {
+            current.write_byte(' ')
+            current.write(word)
+            cur_w += 1 + ww
+        } else {
+            out.append(current.to_string())
+            current.clear()
+            cur_w = 0
+            if ww <= max_width {
+                current.write(word)
+                cur_w = ww
+            } else {
+                push_broken_word(word, max_width, out, current)
+                cur_w = string_width(current.to_string())
+            }
+        }
+    }
+
+    if current.length > 0 {
+        out.append(current.to_string())
+    }
+}
+
+fn push_broken_word(word: String, max_width: uint, out: Array[String], remainder: ByteBuffer) {
+    let pos: uint = 0
+    let len = word.bytes
+    let line_w: uint = 0
+    while pos < len {
+        let cp, n = utf8_decode_at(word, pos)
+        if n == 0 : break
+        let cw = char_width(cp)
+        if line_w > 0 && line_w + cw > max_width {
+            out.append(remainder.to_string())
+            remainder.clear()
+            line_w = 0
+        }
+        remainder.write(word.range(pos, n))
+        line_w += cw
+        pos += n
+    }
+}
+
+/// Selectable scrollable list widget with highlight styling and automatic viewport tracking.
++ class List is Widget {
+    /// Display items.
+    + items: Array[String] (.{})
+    /// Currently selected item index, or `null` for no selection.
+    + selected: ?uint (null)
+    /// First visible item index (automatically updated during `render()` to keep `selected` visible).
+    + offset: uint (0)
+    /// Style applied to unselected items.
+    + style: Style (.{})
+    /// Style applied to the selected item.
+    + highlight_style: Style (Style.default().with_reverse())
+    /// Prefix rendered before the selected item (unselected items are indented by its width).
+    + highlight_symbol: String ("> ")
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Creates a `List` containing `items`.
+    + static fn new(items: Array[String]) List {
+        return List { items: items }
+    }
+
+    /// Sets the selected item index (clamped to valid bounds when non-null).
+    + fn select(index: ?uint) {
+        if !isset(index) {
+            this.selected = null
+            return
+        }
+        if this.items.length == 0 {
+            this.selected = null
+            return
+        }
+        this.selected = index >= this.items.length ? this.items.length - 1 : index
+    }
+
+    /// Moves selection down by one item (clamped to the last item).
+    + fn select_next() {
+        if this.items.length == 0 : return
+        let cur = this.selected
+        if !isset(cur) {
+            this.selected = 0
+        } else if cur + 1 < this.items.length {
+            this.selected = cur + 1
+        }
+    }
+
+    /// Moves selection up by one item (clamped to 0).
+    + fn select_prev() {
+        if this.items.length == 0 : return
+        let cur = this.selected
+        if !isset(cur) {
+            this.selected = 0
+        } else if cur > 0 {
+            this.selected = cur - 1
+        }
+    }
+
+    /// Selects the first item.
+    + fn select_first() {
+        if this.items.length > 0 : this.selected = 0
+    }
+
+    /// Selects the last item.
+    + fn select_last() {
+        if this.items.length > 0 : this.selected = this.items.length - 1
+    }
+
+    /// Renders the visible slice of the list into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        if !this.style.is_default() {
+            buf.fill(inner, " ", this.style)
+        }
+
+        let count = this.items.length
+        if count == 0 : return
+
+        let sel = this.selected
+        if isset(sel) {
+            if sel >= count {
+                sel = count - 1
+                this.selected = sel
+            }
+            if sel < this.offset {
+                this.offset = sel
+            } else if sel >= this.offset + inner.height {
+                this.offset = sel - inner.height + 1
+            }
+        }
+        if this.offset >= count : this.offset = count - 1
+
+        let sym_w = string_width(this.highlight_symbol)
+        let row: uint = 0
+        while row < inner.height {
+            let idx = this.offset + row
+            if idx >= count : break
+            let is_sel = isset(sel) && sel == idx
+            let row_style = is_sel ? this.style.patch(this.highlight_style) : this.style
+            let y = inner.y + row
+
+            if is_sel {
+                buf.fill(Rect.new(inner.x, y, inner.width, 1), " ", row_style)
+            }
+
+            let text_x = inner.x
+            let text_w = inner.width
+            if sym_w > 0 && sym_w < inner.width {
+                if is_sel {
+                    buf.set_string_clipped(inner.x, y, sym_w, this.highlight_symbol, row_style)
+                }
+                text_x = inner.x + sym_w
+                text_w = inner.width - sym_w
+            }
+            buf.set_string_clipped(text_x, y, text_w, this.items[idx], row_style)
+            row++
+        }
+    }
+}
+
+/// Tabular data widget with column headers, `Constraint` column widths, row selection,
+/// and automatic vertical scrolling.
++ class Table is Widget {
+    /// Optional column header labels.
+    + headers: Array[String] (.{})
+    /// Table body rows; each row is an array of column cell strings.
+    + rows: Array[Array[String]] (.{})
+    /// Sizing constraints for each column (defaults to equal `Constraint.fill(1)` if empty).
+    + widths: Array[Constraint] (.{})
+    /// Columns of spacing between adjacent table columns.
+    + column_spacing: uint (1)
+    /// Currently selected row index, or `null` for no selection.
+    + selected: ?uint (null)
+    /// First visible body row index (auto-adjusted during `render()`).
+    + offset: uint (0)
+    /// Style for normal body cells.
+    + style: Style (.{})
+    /// Style for the header row.
+    + header_style: Style (Style.default().with_bold())
+    /// Style for the selected body row.
+    + highlight_style: Style (Style.default().with_reverse())
+    /// Optional prefix shown on the selected row.
+    + highlight_symbol: String ("")
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Sets the selected row index.
+    + fn select(index: ?uint) {
+        if !isset(index) || this.rows.length == 0 {
+            this.selected = null
+            return
+        }
+        this.selected = index >= this.rows.length ? this.rows.length - 1 : index
+    }
+
+    /// Selects the next row (clamped to the last row).
+    + fn select_next() {
+        if this.rows.length == 0 : return
+        let cur = this.selected
+        if !isset(cur) : this.selected = 0
+        else if cur + 1 < this.rows.length : this.selected = cur + 1
+    }
+
+    /// Selects the previous row (clamped to 0).
+    + fn select_prev() {
+        if this.rows.length == 0 : return
+        let cur = this.selected
+        if !isset(cur) : this.selected = 0
+        else if cur > 0 : this.selected = cur - 1
+    }
+
+    /// Renders the table headers and visible rows into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        if !this.style.is_default() {
+            buf.fill(inner, " ", this.style)
+        }
+
+        let col_constraints = this.widths
+        if col_constraints.length == 0 {
+            let num_cols = this.headers.length
+            if num_cols == 0 && this.rows.length > 0 : num_cols = this.rows[0].length
+            let auto_w = Array[Constraint].new(num_cols)
+            let ci: uint = 0
+            while ci < num_cols {
+                auto_w.append(Constraint.fill(1))
+                ci++
+            }
+            col_constraints = auto_w
+        }
+
+        let sym_w = string_width(this.highlight_symbol)
+        let cols_area = inner
+        if sym_w > 0 && sym_w < inner.width {
+            cols_area = Rect.new(inner.x + sym_w, inner.y, inner.width - sym_w, inner.height)
+        }
+
+        let col_rects = Layout.horizontal(col_constraints).with_gap(this.column_spacing).split(cols_area)
+        let cur_y = inner.y
+        let body_height = inner.height
+
+        // Render header row if present
+        if this.headers.length > 0 && body_height > 0 {
+            let hstyle = this.style.patch(this.header_style)
+            buf.fill(Rect.new(inner.x, cur_y, inner.width, 1), " ", hstyle)
+            let c: uint = 0
+            while c < col_rects.length && c < this.headers.length {
+                let cr = col_rects[c]
+                buf.set_string_clipped(cr.x, cur_y, cr.width, this.headers[c], hstyle)
+                c++
+            }
+            cur_y++
+            body_height--
+        }
+
+        let count = this.rows.length
+        if count == 0 || body_height == 0 : return
+
+        let sel = this.selected
+        if isset(sel) {
+            if sel >= count {
+                sel = count - 1
+                this.selected = sel
+            }
+            if sel < this.offset {
+                this.offset = sel
+            } else if sel >= this.offset + body_height {
+                this.offset = sel - body_height + 1
+            }
+        }
+        if this.offset >= count : this.offset = count - 1
+
+        let r: uint = 0
+        while r < body_height {
+            let idx = this.offset + r
+            if idx >= count : break
+            let y = cur_y + r
+            let is_sel = isset(sel) && sel == idx
+            let rstyle = is_sel ? this.style.patch(this.highlight_style) : this.style
+
+            if is_sel {
+                buf.fill(Rect.new(inner.x, y, inner.width, 1), " ", rstyle)
+                if sym_w > 0 && sym_w < inner.width {
+                    buf.set_string_clipped(inner.x, y, sym_w, this.highlight_symbol, rstyle)
+                }
+            }
+
+            let row_cells = this.rows[idx]
+            let c: uint = 0
+            while c < col_rects.length && c < row_cells.length {
+                let cr = col_rects[c]
+                buf.set_string_clipped(cr.x, y, cr.width, row_cells[c], rstyle)
+                c++
+            }
+            r++
+        }
+    }
+}
+
+/// Progress bar / gauge widget with smooth Unicode 1/8th-cell block fill (`▏▎▍▌▋▊▉█`).
++ class Gauge is Widget {
+    /// Fill ratio in `[0.0, 1.0]`.
+    + ratio: f64 (0.0)
+    /// Custom centered label; when empty and `show_percent` is true, renders `"{pct}%"`.
+    + label: String ("")
+    /// Whether to display the percentage label when `label` is empty.
+    + show_percent: bool (true)
+    /// Style for the unfilled track.
+    + style: Style (.{})
+    /// Style for the filled bar.
+    + gauge_style: Style (Style.default().with_fg(Color.green()))
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Creates a `Gauge` initialized from a percentage (`0..100`).
+    + static fn percent(p: uint) Gauge {
+        let clamped = p > 100 ? 100 : p
+        return Gauge { ratio: clamped.to(f64) / 100.0 }
+    }
+
+    /// Updates `ratio` from a percentage (`0..100`).
+    + fn set_percent(p: uint) {
+        let clamped = p > 100 ? 100 : p
+        this.ratio = clamped.to(f64) / 100.0
+    }
+
+    /// Renders the progress bar and centered label into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        let r = this.ratio
+        if r < 0.0 : r = 0.0
+        if r > 1.0 : r = 1.0
+
+        let filled_style = this.style.patch(this.gauge_style)
+        let unfilled_style = this.style
+        buf.fill(inner, " ", unfilled_style)
+
+        // Compute total 1/8th-cell steps filled
+        let total_eighths = (r * (inner.width * 8).to(f64) + 0.5).to(uint)
+        let full_cols = total_eighths / 8
+        let frac = total_eighths % 8
+        if full_cols > inner.width {
+            full_cols = inner.width
+            frac = 0
+        }
+
+        let frac_sym = fractional_block(frac)
+        let row: uint = 0
+        while row < inner.height {
+            let y = inner.y + row
+            let col: uint = 0
+            while col < full_cols {
+                buf.set_cell(inner.x + col, y, "█", filled_style)
+                col++
+            }
+            if frac > 0 && full_cols < inner.width {
+                buf.set_cell(inner.x + full_cols, y, frac_sym, filled_style)
+            }
+            row++
+        }
+
+        let lbl = this.label
+        if lbl.bytes == 0 && this.show_percent {
+            let pct = (r * 100.0 + 0.5).to(uint)
+            if pct > 100 : pct = 100
+            lbl = pct.to(String) + "%"
+        }
+
+        if lbl.bytes > 0 {
+            let lw = string_width(lbl)
+            let lx = aligned_x(inner.x, inner.width, lw, .center)
+            let ly = inner.y + inner.height / 2
+            let pos: uint = 0
+            let col = lx
+            let x_end = inner.right()
+            while pos < lbl.bytes && col < x_end {
+                let cp, n = utf8_decode_at(lbl, pos)
+                if n == 0 : break
+                let cw = char_width(cp)
+                if cw == 0 {
+                    pos += n
+                    continue
+                }
+                if col + cw > x_end : break
+                let ch = lbl.range(pos, n)
+                let rel = col - inner.x
+                let is_filled = rel < full_cols
+                let lstyle = is_filled
+                    ? Style {
+                        fg: unfilled_style.bg.is_reset() ? Color.black() : unfilled_style.bg
+                        bg: filled_style.fg.is_reset() ? Color.white() : filled_style.fg
+                        bold: true
+                    }
+                    : unfilled_style.with_bold()
+                buf.set_cell(col, ly, ch, lstyle)
+                col += cw
+                pos += n
+            }
+        }
+    }
+}
+
+/// Alias for `Gauge`.
++ alias ProgressBar for Gauge
+
+fn fractional_block(eighths: uint) String {
+    if eighths == 1 : return "▏"
+    if eighths == 2 : return "▎"
+    if eighths == 3 : return "▍"
+    if eighths == 4 : return "▌"
+    if eighths == 5 : return "▋"
+    if eighths == 6 : return "▊"
+    if eighths == 7 : return "▉"
+    return " "
+}
+
+/// Horizontal tab bar widget with customizable divider and active tab highlight style.
++ class Tabs is Widget {
+    /// Tab labels.
+    + titles: Array[String] (.{})
+    /// Index of the active tab.
+    + selected: uint (0)
+    /// Separator drawn between tabs.
+    + divider: String (" │ ")
+    /// Style for inactive tabs and dividers.
+    + style: Style (.{})
+    /// Style for the active tab.
+    + highlight_style: Style (Style.default().with_bold().with_reverse())
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Creates a `Tabs` bar from `titles`.
+    + static fn new(titles: Array[String]) Tabs {
+        return Tabs { titles: titles }
+    }
+
+    /// Selects the next tab (wrapping around).
+    + fn select_next() {
+        if this.titles.length == 0 : return
+        this.selected = (this.selected + 1) % this.titles.length
+    }
+
+    /// Selects the previous tab (wrapping around).
+    + fn select_prev() {
+        if this.titles.length == 0 : return
+        this.selected = this.selected == 0 ? this.titles.length - 1 : this.selected - 1
+    }
+
+    /// Renders the tab bar into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        if !this.style.is_default() {
+            buf.fill(inner, " ", this.style)
+        }
+
+        let x = inner.x
+        let y = inner.y
+        let x_end = inner.right()
+        let active_style = this.style.patch(this.highlight_style)
+
+        let i: uint = 0
+        while i < this.titles.length && x < x_end {
+            if i > 0 && this.divider.bytes > 0 {
+                let wrote = buf.set_string_clipped(x, y, x_end - x, this.divider, this.style)
+                x += wrote
+                if x >= x_end : break
+            }
+            let tstyle = i == this.selected ? active_style : this.style
+            let wrote = buf.set_string_clipped(x, y, x_end - x, this.titles[i], tstyle)
+            x += wrote
+            i++
+        }
+    }
+}
+
+/// Editable single-line UTF-8 text input widget with cursor navigation, horizontal scrolling,
+/// placeholder text, and built-in key and paste handlers.
++ class TextInput is Widget {
+    /// Current UTF-8 text content.
+    + value: String ("")
+    /// Cursor position in Unicode codepoints (`0 .. char_count`).
+    + cursor: uint (0)
+    /// Horizontal viewport scroll offset in display columns.
+    + scroll: uint (0)
+    /// Placeholder text displayed when `value` is empty.
+    + placeholder: String ("")
+    /// Whether the input is focused and should display its cursor.
+    + focused: bool (true)
+    /// Base text style.
+    + style: Style (.{})
+    /// Style for `placeholder` text.
+    + placeholder_style: Style (Style.default().with_dim())
+    /// Style applied to the cursor cell when `focused` is true.
+    + cursor_style: Style (Style.default().with_reverse())
+    /// Optional surrounding `Block`.
+    + block: ?Block (null)
+
+    /// Creates an empty `TextInput` with an optional `placeholder`.
+    + static fn new(placeholder: String ("")) TextInput {
+        return TextInput { placeholder: placeholder }
+    }
+
+    /// Replaces the text content and moves the cursor to the end.
+    + fn set_value(text: String) {
+        this.value = text
+        this.cursor = count_codepoints(text)
+    }
+
+    /// Clears the text content and resets cursor and scroll to 0.
+    + fn clear() {
+        this.value = ""
+        this.cursor = 0
+        this.scroll = 0
+    }
+
+    /// Handles a `KeyEvent` (typing, Backspace, Delete, Left/Right, Home/End, Ctrl+A/E/U/K/W).
+    ///
+    /// Returns `true` if the event was handled.
+    + fn handle_key(ev: KeyEvent) bool {
+        let count = count_codepoints(this.value)
+        if this.cursor > count : this.cursor = count
+
+        if ev.key == .left {
+            if this.cursor > 0 : this.cursor--
+            return true
+        }
+        if ev.key == .right {
+            if this.cursor < count : this.cursor++
+            return true
+        }
+        if ev.key == .home || ev.is_ctrl('a') {
+            this.cursor = 0
+            return true
+        }
+        if ev.key == .end || ev.is_ctrl('e') {
+            this.cursor = count
+            return true
+        }
+        if ev.key == .backspace {
+            if this.cursor > 0 {
+                let start_b = byte_offset_for_char(this.value, this.cursor - 1)
+                let end_b = byte_offset_for_char(this.value, this.cursor)
+                this.value = this.value.range(0, start_b) + this.value.range(end_b, this.value.bytes - end_b)
+                this.cursor--
+            }
+            return true
+        }
+        if ev.key == .delete {
+            if this.cursor < count {
+                let start_b = byte_offset_for_char(this.value, this.cursor)
+                let end_b = byte_offset_for_char(this.value, this.cursor + 1)
+                this.value = this.value.range(0, start_b) + this.value.range(end_b, this.value.bytes - end_b)
+            }
+            return true
+        }
+        if ev.is_ctrl('u') {
+            let cut = byte_offset_for_char(this.value, this.cursor)
+            this.value = this.value.range(cut, this.value.bytes - cut)
+            this.cursor = 0
+            return true
+        }
+        if ev.is_ctrl('k') {
+            let cut = byte_offset_for_char(this.value, this.cursor)
+            this.value = this.value.range(0, cut)
+            return true
+        }
+        if ev.is_ctrl('w') {
+            if this.cursor > 0 {
+                let target = this.cursor
+                while target > 0 && char_at_index(this.value, target - 1) == ' ' : target--
+                while target > 0 && char_at_index(this.value, target - 1) != ' ' : target--
+                let start_b = byte_offset_for_char(this.value, target)
+                let end_b = byte_offset_for_char(this.value, this.cursor)
+                this.value = this.value.range(0, start_b) + this.value.range(end_b, this.value.bytes - end_b)
+                this.cursor = target
+            }
+            return true
+        }
+        if ev.key == .char && !ev.modifiers.ctrl && !ev.modifiers.alt && ev.text.bytes > 0 {
+            let pos_b = byte_offset_for_char(this.value, this.cursor)
+            this.value = this.value.range(0, pos_b) + ev.text + this.value.range(pos_b, this.value.bytes - pos_b)
+            this.cursor += count_codepoints(ev.text)
+            return true
+        }
+        return false
+    }
+
+    /// Inserts pasted text at the cursor, replacing line breaks with spaces.
+    + fn handle_paste(ev: PasteEvent) {
+        if ev.text.bytes == 0 : return
+        let clean = ByteBuffer.new(ev.text.bytes)
+        let i: uint = 0
+        while i < ev.text.bytes {
+            let b = ev.text[i]
+            if b == '\r' || b == '\n' : clean.write_byte(' ')
+            else : clean.write_byte(b)
+            i++
+        }
+        let inserted = clean.into_string()
+        let count = count_codepoints(this.value)
+        if this.cursor > count : this.cursor = count
+        let pos_b = byte_offset_for_char(this.value, this.cursor)
+        this.value = this.value.range(0, pos_b) + inserted + this.value.range(pos_b, this.value.bytes - pos_b)
+        this.cursor += count_codepoints(inserted)
+    }
+
+    /// Returns the screen coordinates `(x, y)` of the input cursor within `area`, suitable for
+    /// `frame.set_cursor(pos.x, pos.y)`.
+    + fn cursor_screen_pos(area: Rect) CursorPos {
+        let inner = area
+        let blk = this.block
+        if isset(blk) : inner = blk.inner(area)
+        let cursor_col = this.cursor_display_col()
+        let rel = cursor_col > this.scroll ? cursor_col - this.scroll : 0
+        if inner.width > 0 && rel >= inner.width : rel = inner.width - 1
+        return CursorPos { x: inner.x + rel, y: inner.y }
+    }
+
+    fn cursor_display_col() uint {
+        let b_end = byte_offset_for_char(this.value, this.cursor)
+        return string_width(this.value.range(0, b_end))
+    }
+
+    /// Renders the input value (or placeholder) and cursor highlight into `buf`.
+    + fn render(area: Rect, buf: Buffer) {
+        let inner = area
+        let blk = this.block
+        if isset(blk) {
+            blk.render(area, buf)
+            inner = blk.inner(area)
+        }
+        if inner.is_empty() : return
+
+        buf.fill(inner, " ", this.style)
+
+        let count = count_codepoints(this.value)
+        if this.cursor > count : this.cursor = count
+        let cursor_col = this.cursor_display_col()
+
+        // Keep cursor visible within inner.width
+        if cursor_col < this.scroll {
+            this.scroll = cursor_col
+        } else if cursor_col >= this.scroll + inner.width {
+            this.scroll = cursor_col - inner.width + 1
+        }
+
+        let y = inner.y
+        if this.value.bytes == 0 && this.placeholder.bytes > 0 {
+            let pstyle = this.style.patch(this.placeholder_style)
+            buf.set_string_clipped(inner.x, y, inner.width, this.placeholder, pstyle)
+        } else {
+            let col: uint = 0
+            let pos: uint = 0
+            let len = this.value.bytes
+            while pos < len {
+                let cp, n = utf8_decode_at(this.value, pos)
+                if n == 0 : break
+                let cw = char_width(cp)
+                if cw == 0 {
+                    pos += n
+                    continue
+                }
+                if col >= this.scroll {
+                    let screen_col = col - this.scroll
+                    if screen_col + cw > inner.width : break
+                    buf.set_cell(inner.x + screen_col, y, this.value.range(pos, n), this.style)
+                }
+                col += cw
+                pos += n
+            }
+        }
+
+        if this.focused {
+            let rel = cursor_col >= this.scroll ? cursor_col - this.scroll : 0
+            if rel < inner.width {
+                let cx = inner.x + rel
+                let cur_cell = buf.get(cx, y)
+                let sym = " "
+                if isset(cur_cell) && !cur_cell.skip && cur_cell.symbol.bytes > 0 {
+                    sym = cur_cell.symbol
+                }
+                buf.set_cell(cx, y, sym, this.style.patch(this.cursor_style))
+            }
+        }
+    }
+}
+
+fn count_codepoints(s: String) uint {
+    let count: uint = 0
+    let pos: uint = 0
+    let len = s.bytes
+    while pos < len {
+        let _, n = utf8_decode_at(s, pos)
+        if n == 0 : break
+        count++
+        pos += n
+    }
+    return count
+}
+
+fn byte_offset_for_char(s: String, char_index: uint) uint {
+    let idx: uint = 0
+    let pos: uint = 0
+    let len = s.bytes
+    while pos < len && idx < char_index {
+        let _, n = utf8_decode_at(s, pos)
+        if n == 0 : break
+        pos += n
+        idx++
+    }
+    return pos
+}
+
+fn char_at_index(s: String, char_index: uint) u32 {
+    let off = byte_offset_for_char(s, char_index)
+    let cp, _ = utf8_decode_at(s, off)
+    return cp
+}

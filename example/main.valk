@@ -1,0 +1,211 @@
+use tui
+
+class DashboardApp is tui.App {
+    tabs: tui.Tabs
+    services: tui.List
+    metrics: tui.Table
+    cpu: tui.Gauge
+    memory: tui.Gauge
+    filter: tui.TextInput
+    tick_count: uint (0)
+    status: String ("Tab: switch view  |  Up/Down: navigate  |  Type: filter  |  q / Ctrl+C: quit")
+
+    static fn new() DashboardApp {
+        let services = tui.List {
+            items: Array[String]{
+                "api-gateway     [healthy]",
+                "auth-service    [healthy]",
+                "billing-worker  [degraded]",
+                "search-index    [healthy]",
+                "event-stream    [healthy]",
+                "cache-cluster   [healthy]"
+            }
+            selected: 0
+            highlight_style: tui.Style.default().with_fg(tui.Color.black()).with_bg(tui.Color.cyan()).with_bold()
+            highlight_symbol: "▶ "
+            block: tui.Block {
+                title: " Services "
+                borders: .rounded
+                border_style: tui.Style.default().with_fg(tui.Color.cyan())
+            }
+        }
+
+        let metrics = tui.Table {
+            headers: Array[String]{ "Endpoint", "RPS", "P99", "Status" }
+            rows: Array[Array[String]]{
+                Array[String]{ "GET /v1/users", "1,420", "12ms", "200 OK" },
+                Array[String]{ "POST /v1/orders", "384", "28ms", "201 OK" },
+                Array[String]{ "GET /v1/search", "910", "45ms", "200 OK" },
+                Array[String]{ "POST /v1/billing", "92", "180ms", "503 WARN" }
+            }
+            widths: Array[tui.Constraint]{
+                tui.Constraint.fill(3),
+                tui.Constraint.fixed(7),
+                tui.Constraint.fixed(7),
+                tui.Constraint.fixed(10)
+            }
+            selected: 0
+            header_style: tui.Style.default().with_fg(tui.Color.yellow()).with_bold()
+            highlight_style: tui.Style.default().with_reverse()
+            block: tui.Block {
+                title: " Traffic "
+                borders: .rounded
+                border_style: tui.Style.default().with_fg(tui.Color.blue())
+            }
+        }
+
+        return DashboardApp {
+            tabs: tui.Tabs {
+                titles: Array[String]{ "Overview", "Traffic", "Notes" }
+                selected: 0
+                highlight_style: tui.Style.default().with_fg(tui.Color.black()).with_bg(tui.Color.bright_cyan()).with_bold()
+                block: tui.Block {
+                    title: " valk-tui Dashboard "
+                    title_style: tui.Style.default().with_fg(tui.Color.bright_white()).with_bold()
+                    borders: .rounded
+                }
+            }
+            services: services
+            metrics: metrics
+            cpu: tui.Gauge {
+                ratio: 0.64
+                gauge_style: tui.Style.default().with_fg(tui.Color.green())
+                block: tui.Block { title: " CPU ", borders: .plain }
+            }
+            memory: tui.Gauge {
+                ratio: 0.42
+                gauge_style: tui.Style.default().with_fg(tui.Color.magenta())
+                block: tui.Block { title: " Memory ", borders: .plain }
+            }
+            filter: tui.TextInput {
+                placeholder: "Filter services..."
+                block: tui.Block { title: " Search ", borders: .rounded }
+            }
+        }
+    }
+
+    + fn update(event: tui.Event) bool {
+        let key = event.as_key()
+        if isset(key) {
+            if key.is_ctrl('c') || key.key == .esc : return false
+            if key.is_char("q") && this.filter.value.bytes == 0 : return false
+
+            if key.key == .tab {
+                this.tabs.select_next()
+                return true
+            }
+            if key.key == .backtab {
+                this.tabs.select_prev()
+                return true
+            }
+            if key.key == .down {
+                if this.tabs.selected == 1 : this.metrics.select_next()
+                else : this.services.select_next()
+                return true
+            }
+            if key.key == .up {
+                if this.tabs.selected == 1 : this.metrics.select_prev()
+                else : this.services.select_prev()
+                return true
+            }
+            this.filter.handle_key(key)
+            return true
+        }
+
+        let paste = event.as_paste()
+        if isset(paste) {
+            this.filter.handle_paste(paste)
+            return true
+        }
+
+        if event.is_tick {
+            this.tick_count++
+            let phase = (this.tick_count % 20).to(f64) / 100.0
+            this.cpu.ratio = 0.55 + phase
+        }
+        return true
+    }
+
+    + fn view(frame: tui.Frame) {
+        let rows = tui.Layout.vertical(Array[tui.Constraint]{
+            tui.Constraint.fixed(3),
+            tui.Constraint.fill(1),
+            tui.Constraint.fixed(3),
+            tui.Constraint.fixed(1)
+        }).split(frame.area)
+
+        frame.render(this.tabs, rows[0])
+
+        if this.tabs.selected == 0 {
+            let cols = tui.Layout.horizontal(Array[tui.Constraint]{
+                tui.Constraint.percent(45),
+                tui.Constraint.fill(1)
+            }).with_gap(1).split(rows[1])
+
+            frame.render(this.services, cols[0])
+
+            let right = tui.Layout.vertical(Array[tui.Constraint]{
+                tui.Constraint.fixed(3),
+                tui.Constraint.fixed(3),
+                tui.Constraint.fill(1)
+            }).split(cols[1])
+
+            frame.render(this.cpu, right[0])
+            frame.render(this.memory, right[1])
+            frame.render(this.metrics, right[2])
+        } else if this.tabs.selected == 1 {
+            frame.render(this.metrics, rows[1])
+        } else {
+            let notes = tui.Paragraph {
+                text: "valk-tui is a pure-Valk terminal UI library built on stdlib valk.ansi.\n\nIt provides POSIX/Windows raw mode, ANSI/xterm/kitty event parsing, double-buffered diffed rendering, a constraint layout solver, and headless testing via TestBackend."
+                wrap: true
+                block: tui.Block {
+                    title: " About valk-tui "
+                    borders: .rounded
+                    padding: tui.Padding.xy(1, 1)
+                }
+            }
+            frame.render(notes, rows[1])
+        }
+
+        frame.render(this.filter, rows[2])
+        let cpos = this.filter.cursor_screen_pos(rows[2])
+        frame.set_cursor(cpos.x, cpos.y)
+
+        let footer = tui.Paragraph {
+            text: this.status
+            style: tui.Style.default().with_dim()
+        }
+        frame.render(footer, rows[3])
+    }
+}
+
+fn run_demo_snapshot() {
+    let backend = tui.TestBackend.new(80, 22)
+    let term = tui.Terminal.new(backend)
+    let app = DashboardApp.new()
+    app.filter.set_value("api")
+    term.draw(fn(f: tui.Frame) { app.view(f) }) ! panic(E.message)
+    println(term.buffer.to_plain_string())
+}
+
+fn main(args: Array[String]) {
+    let demo = false
+    each args as arg {
+        if arg == "--demo" : demo = true
+    }
+
+    let ansi_backend = tui.AnsiBackend.new()
+    if demo || !ansi_backend.is_tty() {
+        run_demo_snapshot()
+        return
+    }
+
+    let term = tui.Terminal.new(ansi_backend)
+    let app = DashboardApp.new()
+    tui.run_app(term, app, tui.AppOptions {
+        tick_ms: 250
+        manage_terminal: true
+        mouse: true
+    }) ! panic("TUI error: " + E.message)
+}

@@ -1,0 +1,708 @@
+
+/// Logical key codes produced by the terminal input parser.
++ enum Key {
+    /// A printable Unicode character (see `KeyEvent.text` and `KeyEvent.codepoint`).
+    char
+    /// Enter / Return.
+    enter
+    /// Tab.
+    tab
+    /// Shift+Tab (`ESC[Z`).
+    backtab
+    /// Backspace (`0x7f` or `0x08`).
+    backspace
+    /// Delete (`ESC[3~`).
+    delete
+    /// Escape.
+    esc
+    /// Up arrow.
+    up
+    /// Down arrow.
+    down
+    /// Left arrow.
+    left
+    /// Right arrow.
+    right
+    /// Home.
+    home
+    /// End.
+    end
+    /// Page Up.
+    page_up
+    /// Page Down.
+    page_down
+    /// Insert.
+    insert
+    /// Function key F1.
+    f1
+    /// Function key F2.
+    f2
+    /// Function key F3.
+    f3
+    /// Function key F4.
+    f4
+    /// Function key F5.
+    f5
+    /// Function key F6.
+    f6
+    /// Function key F7.
+    f7
+    /// Function key F8.
+    f8
+    /// Function key F9.
+    f9
+    /// Function key F10.
+    f10
+    /// Function key F11.
+    f11
+    /// Function key F12.
+    f12
+    /// Unrecognized escape sequence.
+    unknown
+}
+
+/// Modifier keys held during a keyboard or mouse event.
++ struct Modifiers {
+    /// Control modifier.
+    + ctrl: bool (false)
+    /// Alt / Meta modifier.
+    + alt: bool (false)
+    /// Shift modifier.
+    + shift: bool (false)
+
+    /// Returns empty modifiers (all false).
+    + static fn none() Modifiers {
+        return Modifiers {}
+    }
+
+    /// Returns whether no modifier keys are held.
+    + fn is_empty() bool {
+        return !this.ctrl && !this.alt && !this.shift
+    }
+
+    /// Returns whether two modifier sets are equal.
+    + fn equals(other: Modifiers) bool $eq {
+        return this.ctrl == other.ctrl && this.alt == other.alt && this.shift == other.shift
+    }
+}
+
+/// A decoded keyboard input event.
++ class KeyEvent {
+    /// Logical key code.
+    + key: Key
+    /// Unicode codepoint when `key == Key.char` (0 for non-character keys).
+    + codepoint: u32 (0)
+    /// UTF-8 text when `key == Key.char` (`""` for non-character keys).
+    + text: String ("")
+    /// Active modifier keys.
+    + modifiers: Modifiers (.{})
+
+    /// Creates a character key event from a UTF-8 string.
+    + static fn char(text: String, modifiers: Modifiers (.{})) KeyEvent {
+        let cp, _ = utf8_decode_at(text, 0)
+        return KeyEvent {
+            key: .char
+            codepoint: cp
+            text: text
+            modifiers: modifiers
+        }
+    }
+
+    /// Creates a non-character key event (arrows, enter, function keys, etc.).
+    + static fn code(key: Key, modifiers: Modifiers (.{})) KeyEvent {
+        return KeyEvent {
+            key: key
+            modifiers: modifiers
+        }
+    }
+
+    /// Returns whether this is a plain character press matching `s` without Ctrl or Alt.
+    + fn is_char(s: String) bool {
+        return this.key == .char && this.text == s && !this.modifiers.ctrl && !this.modifiers.alt
+    }
+
+    /// Returns whether this is a Ctrl+character press matching `ch` (e.g. `'c'`).
+    + fn is_ctrl(ch: u8) bool {
+        return this.key == .char && this.modifiers.ctrl && this.codepoint == ch.to(u32)
+    }
+}
+
+/// Kind of mouse action in a `MouseEvent`.
++ enum MouseKind {
+    /// Mouse button pressed.
+    down
+    /// Mouse button released.
+    up
+    /// Mouse moved while a button is held.
+    drag
+    /// Mouse moved with no button held.
+    move
+    /// Scroll wheel moved up.
+    scroll_up
+    /// Scroll wheel moved down.
+    scroll_down
+}
+
+/// Mouse button associated with a `MouseEvent`.
++ enum MouseButton {
+    /// Left button.
+    left
+    /// Middle button.
+    middle
+    /// Right button.
+    right
+    /// No button (e.g. move or scroll).
+    none
+}
+
+/// A decoded terminal mouse event (SGR 1006 mode).
++ class MouseEvent {
+    /// Action kind.
+    + kind: MouseKind
+    /// Button involved.
+    + button: MouseButton (.none)
+    /// 0-based terminal column.
+    + x: uint (0)
+    /// 0-based terminal row.
+    + y: uint (0)
+    /// Modifier keys held during the event.
+    + modifiers: Modifiers (.{})
+}
+
+/// Emitted when the terminal dimensions change.
++ class ResizeEvent {
+    /// New width in columns.
+    + width: uint
+    /// New height in rows.
+    + height: uint
+}
+
+/// Emitted when text is pasted inside bracketed paste markers (`ESC[200~ ... ESC[201~`).
++ class PasteEvent {
+    /// Pasted UTF-8 text.
+    + text: String
+}
+
+/// Emitted periodically by `run_app` when a tick interval elapses.
++ class TickEvent {
+    /// Milliseconds elapsed since the previous tick.
+    + elapsed_ms: uint (0)
+}
+
+/// A terminal input or lifecycle event.
++ union Event: KeyEvent | MouseEvent | ResizeEvent | PasteEvent | TickEvent {
+    /// Returns the underlying `KeyEvent`, or `null` if this is another event kind.
+    + fn as_key() ?KeyEvent {
+        return match this : ?KeyEvent {
+            KeyEvent as e => e
+            default => null
+        }
+    }
+
+    /// Returns the underlying `MouseEvent`, or `null` if this is another event kind.
+    + fn as_mouse() ?MouseEvent {
+        return match this : ?MouseEvent {
+            MouseEvent as e => e
+            default => null
+        }
+    }
+
+    /// Returns the underlying `ResizeEvent`, or `null` if this is another event kind.
+    + fn as_resize() ?ResizeEvent {
+        return match this : ?ResizeEvent {
+            ResizeEvent as e => e
+            default => null
+        }
+    }
+
+    /// Returns the underlying `PasteEvent`, or `null` if this is another event kind.
+    + fn as_paste() ?PasteEvent {
+        return match this : ?PasteEvent {
+            PasteEvent as e => e
+            default => null
+        }
+    }
+
+    /// Returns whether this event is a `TickEvent`.
+    + get is_tick: bool {
+        return match this : bool {
+            TickEvent as _ => true
+            default => false
+        }
+    }
+}
+
+/// Incremental ANSI/VT100/xterm/kitty terminal input byte stream parser.
+///
+/// Feed raw bytes as they arrive from the terminal with `feed()`, then drain complete
+/// events with `next()`. Call `flush_escape()` after a short read timeout to emit a
+/// standalone Escape key press.
++ class EventParser {
+    buf: ByteBuffer
+    in_paste: bool (false)
+    paste_buf: ByteBuffer
+
+    /// Creates a new empty `EventParser`.
+    + static fn new() EventParser {
+        return EventParser {
+            buf: ByteBuffer.new(256)
+            paste_buf: ByteBuffer.new(128)
+        }
+    }
+
+    /// Appends raw input bytes to the parser buffer.
+    + fn feed(bytes: local &[u8]) {
+        if bytes.length > 0 : this.buf.write(bytes)
+    }
+
+    /// Appends a string of raw input bytes to the parser buffer.
+    + fn feed_string(s: String) {
+        if s.bytes > 0 : this.buf.write(s)
+    }
+
+    /// Returns whether unread bytes remain in the parser buffer.
+    + fn has_pending() bool {
+        return this.buf.length > 0
+    }
+
+    /// Parses a complete byte slice into all decoded events, flushing any trailing bare ESC.
+    + static fn parse_all(bytes: local &[u8]) Array[Event] {
+        let p = EventParser.new()
+        p.feed(bytes)
+        let out = Array[Event].new()
+        while true {
+            let ev = p.next()
+            if isset(ev) {
+                out.append(ev)
+                continue
+            }
+            let esc = p.flush_escape()
+            if isset(esc) {
+                out.append(esc)
+                continue
+            }
+            break
+        }
+        return out
+    }
+
+    /// Parses a complete string of terminal input bytes into all decoded events.
+    + static fn parse_string(s: String) Array[Event] {
+        return EventParser.parse_all(s)
+    }
+
+    /// Flushes a standalone pending Escape byte (`0x1b`) as `Key.esc`.
+    ///
+    /// Call this when `next()` returns `null` after a short input timeout so a user pressing
+    /// Escape is not held indefinitely waiting for a CSI/SS3 continuation.
+    + fn flush_escape() ?Event {
+        if this.in_paste : return null
+        if this.buf.length == 1 && this.buf[0] == 0x1b {
+            this.buf.clear()
+            return KeyEvent.code(.esc)
+        }
+        return null
+    }
+
+    /// Decodes and returns the next complete `Event`, or `null` if more bytes are needed.
+    + fn next() ?Event {
+        if this.in_paste {
+            return this.parse_paste()
+        }
+        if this.buf.length == 0 : return null
+
+        let b0 = this.buf[0]
+        if b0 == 0x1b {
+            return this.parse_escape()
+        }
+        return this.parse_plain_byte(Modifiers.none())
+    }
+
+    fn parse_paste() ?Event {
+        // Look for ESC[201~ end marker
+        let marker = "\x1b[201~"
+        let len = this.buf.length
+        let i: uint = 0
+        while i < len {
+            if this.buf[i] == 0x1b {
+                let rem = len - i
+                if rem < 6 {
+                    // Could be a partial end marker: flush bytes before i, keep suffix
+                    if i > 0 {
+                        this.paste_buf.write(this.buf.view(0, i))
+                        this.buf.clear_until(i)
+                    }
+                    return null
+                }
+                if this.buf.starts_with(marker, i) {
+                    if i > 0 {
+                        this.paste_buf.write(this.buf.view(0, i))
+                    }
+                    this.buf.clear_until(i + 6)
+                    this.in_paste = false
+                    let text = this.paste_buf.to_string()
+                    this.paste_buf.clear()
+                    return PasteEvent { text: text }
+                }
+            }
+            i++
+        }
+        // No ESC found at all: move everything into paste_buf
+        if len > 0 {
+            this.paste_buf.write(this.buf.view(0, len))
+            this.buf.clear()
+        }
+        return null
+    }
+
+    fn parse_escape() ?Event {
+        let len = this.buf.length
+        if len < 2 {
+            // Wait for potential sequence bytes; caller can call flush_escape() after timeout
+            return null
+        }
+
+        let b1 = this.buf[1]
+        if b1 == '[' {
+            return this.parse_csi()
+        }
+        if b1 == 'O' {
+            return this.parse_ss3()
+        }
+        if b1 == 0x1b {
+            // Double ESC: emit one Esc and keep the second ESC for whatever follows
+            this.buf.clear_until(1)
+            return KeyEvent.code(.esc)
+        }
+
+        // Alt + key: consume leading ESC and parse the following key with alt=true
+        this.buf.clear_until(1)
+        let ev = this.parse_plain_byte(Modifiers { alt: true })
+        if !isset(ev) {
+            // Incomplete UTF-8 after ESC: restore ESC at front
+            let saved = this.buf.to_string()
+            this.buf.clear()
+            this.buf.write_byte(0x1b)
+            this.buf.write(saved)
+            return null
+        }
+        return ev
+    }
+
+    fn parse_ss3() ?Event {
+        if this.buf.length < 3 : return null
+        let b2 = this.buf[2]
+        this.buf.clear_until(3)
+        let k = Key.unknown
+        if b2 == 'P' : k = .f1
+        else if b2 == 'Q' : k = .f2
+        else if b2 == 'R' : k = .f3
+        else if b2 == 'S' : k = .f4
+        else if b2 == 'A' : k = .up
+        else if b2 == 'B' : k = .down
+        else if b2 == 'C' : k = .right
+        else if b2 == 'D' : k = .left
+        else if b2 == 'H' : k = .home
+        else if b2 == 'F' : k = .end
+        return KeyEvent.code(k)
+    }
+
+    fn parse_csi() ?Event {
+        // CSI format: ESC [ <params/intermediates in 0x20..0x3f> <final in 0x40..0x7e>
+        let len = this.buf.length
+        let pos: uint = 2
+        while pos < len {
+            let b = this.buf[pos]
+            if b >= 0x40 && b <= 0x7e {
+                // Complete CSI sequence: bytes [2 .. pos) are params, b is final
+                let params = slice_buf_string(this.buf, 2, pos - 2)
+                this.buf.clear_until(pos + 1)
+                return this.decode_csi(params, b)
+            }
+            if b < 0x20 || b > 0x3f {
+                // Malformed CSI: drop ESC [ and stop
+                this.buf.clear_until(pos + 1)
+                return KeyEvent.code(.unknown)
+            }
+            pos++
+        }
+        // Incomplete CSI sequence
+        return null
+    }
+
+    fn decode_csi(params: String, final_byte: u8) ?Event {
+        // Bracketed paste start: ESC[200~
+        if final_byte == '~' && params == "200" {
+            this.in_paste = true
+            this.paste_buf.clear()
+            return this.parse_paste()
+        }
+
+        // SGR mouse: ESC[<b;x;yM or ESC[<b;x;ym
+        if params.bytes > 0 && params[0] == '<' && (final_byte == 'M' || final_byte == 'm') {
+            return decode_sgr_mouse(params.range(1, params.bytes - 1), final_byte == 'M')
+        }
+
+        // Kitty keyboard protocol: ESC[<codepoint>(;<mod>)?u
+        if final_byte == 'u' {
+            return decode_kitty_key(params)
+        }
+
+        // Parse semicolon-separated numeric params (stripping optional ':' subparams)
+        let p0, p1, count = parse_csi_params(params)
+        let mods = count >= 2 ? decode_csi_modifiers(p1) : Modifiers.none()
+
+        if final_byte == 'A' : return KeyEvent.code(.up, mods)
+        if final_byte == 'B' : return KeyEvent.code(.down, mods)
+        if final_byte == 'C' : return KeyEvent.code(.right, mods)
+        if final_byte == 'D' : return KeyEvent.code(.left, mods)
+        if final_byte == 'H' : return KeyEvent.code(.home, mods)
+        if final_byte == 'F' : return KeyEvent.code(.end, mods)
+        if final_byte == 'Z' {
+            mods.shift = true
+            return KeyEvent.code(.backtab, mods)
+        }
+        if final_byte == 'P' : return KeyEvent.code(.f1, mods)
+        if final_byte == 'Q' : return KeyEvent.code(.f2, mods)
+        if final_byte == 'R' : return KeyEvent.code(.f3, mods)
+        if final_byte == 'S' : return KeyEvent.code(.f4, mods)
+
+        if final_byte == '~' {
+            let k = Key.unknown
+            if p0 == 1 || p0 == 7 : k = .home
+            else if p0 == 2 : k = .insert
+            else if p0 == 3 : k = .delete
+            else if p0 == 4 || p0 == 8 : k = .end
+            else if p0 == 5 : k = .page_up
+            else if p0 == 6 : k = .page_down
+            else if p0 == 11 : k = .f1
+            else if p0 == 12 : k = .f2
+            else if p0 == 13 : k = .f3
+            else if p0 == 14 : k = .f4
+            else if p0 == 15 : k = .f5
+            else if p0 == 17 : k = .f6
+            else if p0 == 18 : k = .f7
+            else if p0 == 19 : k = .f8
+            else if p0 == 20 : k = .f9
+            else if p0 == 21 : k = .f10
+            else if p0 == 23 : k = .f11
+            else if p0 == 24 : k = .f12
+            return KeyEvent.code(k, mods)
+        }
+
+        return KeyEvent.code(.unknown, mods)
+    }
+
+    fn parse_plain_byte(base_mods: Modifiers) ?Event {
+        let len = this.buf.length
+        if len == 0 : return null
+        let b0 = this.buf[0]
+
+        if b0 == 0x0d || b0 == 0x0a {
+            this.buf.clear_until(1)
+            return KeyEvent.code(.enter, base_mods)
+        }
+        if b0 == 0x09 {
+            this.buf.clear_until(1)
+            return KeyEvent.code(.tab, base_mods)
+        }
+        if b0 == 0x7f || b0 == 0x08 {
+            this.buf.clear_until(1)
+            return KeyEvent.code(.backspace, base_mods)
+        }
+        if b0 == 0x00 {
+            this.buf.clear_until(1)
+            let mods = Modifiers { ctrl: true, alt: base_mods.alt, shift: base_mods.shift }
+            return KeyEvent.char(" ", mods)
+        }
+        if b0 >= 0x01 && b0 <= 0x1a {
+            this.buf.clear_until(1)
+            let mods = Modifiers { ctrl: true, alt: base_mods.alt, shift: base_mods.shift }
+            let letter = ('a'.to(u8) + (b0 - 1))
+            let s = utf8_encode(letter.to(u32))
+            return KeyEvent {
+                key: .char
+                codepoint: letter.to(u32)
+                text: s
+                modifiers: mods
+            }
+        }
+        if b0 < 0x20 {
+            this.buf.clear_until(1)
+            return KeyEvent.code(.unknown, base_mods)
+        }
+        if b0 < 0x80 {
+            this.buf.clear_until(1)
+            let s = utf8_encode(b0.to(u32))
+            return KeyEvent {
+                key: .char
+                codepoint: b0.to(u32)
+                text: s
+                modifiers: base_mods
+            }
+        }
+
+        // Multibyte UTF-8 lead byte
+        let needed: uint = 1
+        if (b0 & 0xe0) == 0xc0 : needed = 2
+        else if (b0 & 0xf0) == 0xe0 : needed = 3
+        else if (b0 & 0xf8) == 0xf0 : needed = 4
+        else {
+            // Stray continuation or invalid lead byte
+            this.buf.clear_until(1)
+            return KeyEvent.code(.unknown, base_mods)
+        }
+
+        if len < needed {
+            // Wait for remaining UTF-8 bytes
+            return null
+        }
+
+        let raw = slice_buf_string(this.buf, 0, needed)
+        let cp, decoded_len = utf8_decode_at(raw, 0)
+        this.buf.clear_until(decoded_len > 0 ? decoded_len : 1)
+        if cp == 0xfffd {
+            return KeyEvent.code(.unknown, base_mods)
+        }
+        let text = utf8_encode(cp)
+        return KeyEvent {
+            key: .char
+            codepoint: cp
+            text: text
+            modifiers: base_mods
+        }
+    }
+}
+
+fn slice_buf_string(buf: ByteBuffer, offset: uint, len: uint) String {
+    if len == 0 || offset >= buf.length : return ""
+    let avail = buf.length - offset
+    let take = len < avail ? len : avail
+    let out = ByteBuffer.new(take)
+    out.write(buf.view(offset, take))
+    return out.into_string()
+}
+
+fn parse_uint_prefix(s: String, start: uint, end: uint) uint {
+    let val: uint = 0
+    let i = start
+    while i < end {
+        let ch = s[i]
+        if ch == ':' : break
+        if ch >= '0' && ch <= '9' {
+            val = val * 10 + (ch - '0').to(uint)
+        }
+        i++
+    }
+    return val
+}
+
+fn parse_csi_params(params: String) (uint, uint, uint) {
+    if params.bytes == 0 : return (0, 0, 0)
+    let len = params.bytes
+    let semi: uint = len
+    let i: uint = 0
+    while i < len {
+        if params[i] == ';' {
+            semi = i
+            break
+        }
+        i++
+    }
+    let p0 = parse_uint_prefix(params, 0, semi)
+    if semi >= len : return (p0, 0, 1)
+    let next_start = semi + 1
+    let next_end = len
+    let j = next_start
+    while j < len {
+        if params[j] == ';' {
+            next_end = j
+            break
+        }
+        j++
+    }
+    let p1 = parse_uint_prefix(params, next_start, next_end)
+    return (p0, p1, 2)
+}
+
+fn decode_csi_modifiers(param: uint) Modifiers {
+    if param <= 1 : return Modifiers.none()
+    let bits = param - 1
+    return Modifiers {
+        shift: (bits & 1) != 0
+        alt: (bits & 2) != 0
+        ctrl: (bits & 4) != 0
+    }
+}
+
+fn decode_sgr_mouse(params: String, pressed: bool) MouseEvent {
+    // Format: b;x;y
+    let len = params.bytes
+    let s1: uint = len
+    let s2: uint = len
+    let i: uint = 0
+    while i < len {
+        if params[i] == ';' {
+            if s1 == len : s1 = i
+            else if s2 == len {
+                s2 = i
+                break
+            }
+        }
+        i++
+    }
+    let cb = parse_uint_prefix(params, 0, s1)
+    let cx = s1 < len ? parse_uint_prefix(params, s1 + 1, s2) : 1
+    let cy = s2 < len ? parse_uint_prefix(params, s2 + 1, len) : 1
+
+    let x = cx > 0 ? cx - 1 : 0
+    let y = cy > 0 ? cy - 1 : 0
+
+    let mods = Modifiers {
+        shift: (cb & 4) != 0
+        alt: (cb & 8) != 0
+        ctrl: (cb & 16) != 0
+    }
+
+    if (cb & 64) != 0 {
+        let kind = (cb & 1) == 0 ? MouseKind.scroll_up : MouseKind.scroll_down
+        return MouseEvent { kind: kind, button: .none, x: x, y: y, modifiers: mods }
+    }
+
+    let btn_code = cb & 3
+    let button = MouseButton.none
+    if btn_code == 0 : button = .left
+    else if btn_code == 1 : button = .middle
+    else if btn_code == 2 : button = .right
+
+    let kind = pressed ? MouseKind.down : MouseKind.up
+    if (cb & 32) != 0 {
+        kind = button == .none ? MouseKind.move : MouseKind.drag
+    }
+
+    return MouseEvent {
+        kind: kind
+        button: button
+        x: x
+        y: y
+        modifiers: mods
+    }
+}
+
+fn decode_kitty_key(params: String) KeyEvent {
+    let cp, mod_param, count = parse_csi_params(params)
+    let mods = count >= 2 ? decode_csi_modifiers(mod_param) : Modifiers.none()
+
+    if cp == 13 : return KeyEvent.code(.enter, mods)
+    if cp == 9 : return KeyEvent.code(.tab, mods)
+    if cp == 27 : return KeyEvent.code(.esc, mods)
+    if cp == 127 || cp == 8 : return KeyEvent.code(.backspace, mods)
+
+    let code = cp.to(u32)
+    return KeyEvent {
+        key: .char
+        codepoint: code
+        text: utf8_encode(code)
+        modifiers: mods
+    }
+}

@@ -1,0 +1,837 @@
+use valk.ansi
+use valk.io
+use valk.time
+
+// ANSI escape sequences used by the terminal controller
+value SEQ_ENTER_ALT_SCREEN ("\x1b[?1049h")
+value SEQ_LEAVE_ALT_SCREEN ("\x1b[?1049l")
+value SEQ_HIDE_CURSOR ("\x1b[?25l")
+value SEQ_SHOW_CURSOR ("\x1b[?25h")
+value SEQ_ENABLE_MOUSE ("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
+value SEQ_DISABLE_MOUSE ("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
+value SEQ_ENABLE_PASTE ("\x1b[?2004h")
+value SEQ_DISABLE_PASTE ("\x1b[?2004l")
+value SEQ_RESET_STYLE ("\x1b[0m")
+
+// Platform terminal control bindings
+#if OS == "linux"
+struct Termios {
+    c_iflag: u32 (0)
+    c_oflag: u32 (0)
+    c_cflag: u32 (0)
+    c_lflag: u32 (0)
+    c_line: u8 (0)
+    c_cc: [u8 x 32] ({ 0... })
+    c_ispeed: u32 (0)
+    c_ospeed: u32 (0)
+}
+
+struct Winsize {
+    ws_row: u16 (0)
+    ws_col: u16 (0)
+    ws_xpixel: u16 (0)
+    ws_ypixel: u16 (0)
+}
+
+struct PollFd {
+    fd: i32 (0)
+    events: i16 (0)
+    revents: i16 (0)
+}
+
+struct SigAction {
+    handler: ptr
+    mask: [u64 x 16] ({ 0... })
+    flags: i32 (0)
+    restorer: ?ptr (null)
+}
+
+value TCSAFLUSH (2)
+value TIOCGWINSZ (0x5413)
+value SIGWINCH (28)
+value POLLIN (0x0001)
+
+value IGNBRK (0x0001)
+value BRKINT (0x0002)
+value PARMRK (0x0008)
+value ISTRIP (0x0020)
+value INLCR (0x0040)
+value IGNCR (0x0080)
+value ICRNL (0x0100)
+value IXON (0x0400)
+value OPOST (0x0001)
+value ECHO (0x0008)
+value ECHONL (0x0040)
+value ICANON (0x0002)
+value ISIG (0x0001)
+value IEXTEN (0x8000)
+value CSIZE (0x0030)
+value PARENB (0x0100)
+value CS8 (0x0030)
+value VMIN (6)
+value VTIME (5)
+
+extern fn tcgetattr(fd: i32, termios_p: *Termios) i32;
+extern fn tcsetattr(fd: i32, optional_actions: i32, termios_p: *Termios) i32;
+extern fn ioctl(fd: i32, request: uint, ...) i32;
+extern fn poll(fds: *PollFd, nfds: uint, timeout: i32) i32;
+extern fn read(fd: i32, buf: ptr, size: uint) int;
+extern fn write(fd: i32, data: ptr, length: uint) int;
+extern fn isatty(fd: i32) i32;
+extern fn sigaction(sig: i32, action: *SigAction, old: ?ptr) i32;
+
+shared winch_flag: u8 (0)
+
+fn winch_handler(_sig: i32) {
+    winch_flag = 1
+}
+
+#elif OS == "macos"
+struct Termios {
+    c_iflag: u64 (0)
+    c_oflag: u64 (0)
+    c_cflag: u64 (0)
+    c_lflag: u64 (0)
+    c_cc: [u8 x 20] ({ 0... })
+    c_ispeed: u64 (0)
+    c_ospeed: u64 (0)
+}
+
+struct Winsize {
+    ws_row: u16 (0)
+    ws_col: u16 (0)
+    ws_xpixel: u16 (0)
+    ws_ypixel: u16 (0)
+}
+
+struct PollFd {
+    fd: i32 (0)
+    events: i16 (0)
+    revents: i16 (0)
+}
+
+struct SigAction {
+    handler: ptr
+    mask: u32 (0)
+    flags: i32 (0)
+}
+
+value TCSAFLUSH (2)
+value TIOCGWINSZ (0x40087468)
+value SIGWINCH (28)
+value POLLIN (0x0001)
+
+value IGNBRK (0x0001)
+value BRKINT (0x0002)
+value PARMRK (0x0008)
+value ISTRIP (0x0020)
+value INLCR (0x0040)
+value IGNCR (0x0080)
+value ICRNL (0x0100)
+value IXON (0x0200)
+value OPOST (0x0001)
+value ECHO (0x0008)
+value ECHONL (0x0010)
+value ICANON (0x0100)
+value ISIG (0x0080)
+value IEXTEN (0x0400)
+value CSIZE (0x0300)
+value PARENB (0x1000)
+value CS8 (0x0300)
+value VMIN (16)
+value VTIME (17)
+
+extern fn tcgetattr(fd: i32, termios_p: *Termios) i32;
+extern fn tcsetattr(fd: i32, optional_actions: i32, termios_p: *Termios) i32;
+extern fn ioctl(fd: i32, request: uint, ...) i32;
+extern fn poll(fds: *PollFd, nfds: u32, timeout: i32) i32;
+extern fn read(fd: i32, buf: ptr, size: uint) int;
+extern fn write(fd: i32, data: ptr, length: uint) int;
+extern fn isatty(fd: i32) i32;
+extern fn sigaction(sig: i32, action: *SigAction, old: ?ptr) i32;
+
+shared winch_flag: u8 (0)
+
+fn winch_handler(_sig: i32) {
+    winch_flag = 1
+}
+
+#elif OS == "win"
+struct WinCoord {
+    x: i16 (0)
+    y: i16 (0)
+}
+
+struct WinSmallRect {
+    left: i16 (0)
+    top: i16 (0)
+    right: i16 (0)
+    bottom: i16 (0)
+}
+
+struct ConsoleScreenBufferInfo {
+    dwSize: WinCoord (.{})
+    dwCursorPosition: WinCoord (.{})
+    wAttributes: u16 (0)
+    srWindow: WinSmallRect (.{})
+    dwMaximumWindowSize: WinCoord (.{})
+}
+
+value STD_INPUT_HANDLE (0xfffffff6)
+value STD_OUTPUT_HANDLE (0xfffffff5)
+value ENABLE_PROCESSED_INPUT (0x0001)
+value ENABLE_LINE_INPUT (0x0002)
+value ENABLE_ECHO_INPUT (0x0004)
+value ENABLE_VIRTUAL_TERMINAL_INPUT (0x0200)
+value ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004)
+
+extern fn GetStdHandle(nStdHandle: u32) uint;
+extern fn GetConsoleMode(handle: uint, mode: *u32) i32;
+extern fn SetConsoleMode(handle: uint, mode: u32) i32;
+extern fn GetConsoleScreenBufferInfo(handle: uint, info: *ConsoleScreenBufferInfo) i32;
+extern fn WaitForSingleObject(handle: uint, ms: u32) u32;
+extern fn _isatty(fd: i32) i32;
+extern fn _read(fd: i32, buf: ptr, size: u32) int;
+extern fn _write(fd: i32, buf: ptr, size: u32) int;
+#end
+
+/// Returns whether stdout supports ANSI escape codes (delegates to `valk.ansi.supported()`).
++ fn ansi_supported() bool {
+    return ansi.supported()
+}
+
+/// Returns whether console output expects UTF-8 (delegates to `valk.ansi.utf8_supported()`).
++ fn utf8_supported() bool {
+    return ansi.utf8_supported()
+}
+
+/// Pluggable terminal I/O backend implemented by `AnsiBackend` (real TTY) and `TestBackend`.
++ interface Backend {
+    /// Writes raw bytes (such as ANSI escape sequences and UTF-8 text) to the terminal.
+    + fn write(bytes: local &[u8]) !TuiError;
+    /// Returns the current terminal dimensions as `(width, height)` in cells.
+    + fn size() (uint, uint);
+    /// Waits up to `timeout_ms` milliseconds for the next input or resize event.
+    ///
+    /// Returns `null` when the timeout elapses with no event.
+    + fn read_event(timeout_ms: uint) ?Event !TuiError;
+    /// Switches the underlying terminal into raw mode.
+    + fn enter_raw_mode() !TuiError;
+    /// Restores the terminal's original cooked mode settings.
+    + fn leave_raw_mode() !TuiError;
+}
+
+/// Real TTY backend using POSIX `termios`/`ioctl`/`poll` on Linux and macOS, or Win32
+/// virtual terminal console APIs on Windows.
++ class AnsiBackend is Backend {
+    in_fd: i32 (0)
+    out_fd: i32 (1)
+    parser: EventParser
+    raw_enabled: bool (false)
+    last_w: uint (80)
+    last_h: uint (24)
+    #if OS == "linux" || OS == "macos"
+    orig_termios: Termios (.{})
+    winch_installed: bool (false)
+    #elif OS == "win"
+    orig_in_mode: u32 (0)
+    orig_out_mode: u32 (0)
+    #end
+
+    /// Creates an `AnsiBackend` attached to standard input (`0`) and standard output (`1`).
+    + static fn new(in_fd: i32 (0), out_fd: i32 (1)) AnsiBackend {
+        let b = AnsiBackend {
+            in_fd: in_fd
+            out_fd: out_fd
+            parser: EventParser.new()
+        }
+        let w, h = b.size()
+        b.last_w = w
+        b.last_h = h
+        return b
+    }
+
+    /// Returns whether the input and output descriptors are connected to a TTY.
+    + fn is_tty() bool {
+        #if OS == "win"
+        return _isatty(this.in_fd) != 0 && _isatty(this.out_fd) != 0
+        #else
+        return isatty(this.in_fd) != 0 && isatty(this.out_fd) != 0
+        #end
+    }
+
+    /// Writes all `bytes` to the terminal output descriptor.
+    + fn write(bytes: local &[u8]) !TuiError {
+        if bytes.length == 0 : return
+        if this.out_fd == 1 {
+            io.write_all(io.stdout(), bytes) ! throw .io_error { message: "Failed to write to stdout" }
+            return
+        }
+        @unsafe
+        let offset: uint = 0
+        let total = bytes.length
+        while offset < total {
+            #if OS == "win"
+            let chunk = total - offset
+            let written = _write(this.out_fd, bytes.data + offset, chunk.to(u32))
+            #else
+            let written = write(this.out_fd, bytes.data + offset, total - offset)
+            #end
+            if written <= 0 : throw .io_error { message: "Failed to write to terminal descriptor" }
+            offset += written.to(uint)
+        }
+    }
+
+    /// Queries the current terminal dimensions `(width, height)`. Defaults to `(80, 24)` if unavailable.
+    + fn size() (uint, uint) {
+        #if OS == "linux" || OS == "macos"
+        let ws = Winsize {}
+        if ioctl(this.out_fd, TIOCGWINSZ, @ref(ws).@cast(ptr)) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+            return (ws.ws_col.to(uint), ws.ws_row.to(uint))
+        }
+        if ioctl(this.in_fd, TIOCGWINSZ, @ref(ws).@cast(ptr)) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+            return (ws.ws_col.to(uint), ws.ws_row.to(uint))
+        }
+        return (80, 24)
+        #elif OS == "win"
+        let h = GetStdHandle(STD_OUTPUT_HANDLE)
+        let info = ConsoleScreenBufferInfo {}
+        if GetConsoleScreenBufferInfo(h, @ref(info)) != 0 {
+            let w = (info.srWindow.right - info.srWindow.left + 1)
+            let rows = (info.srWindow.bottom - info.srWindow.top + 1)
+            if w > 0 && rows > 0 : return (w.to(uint), rows.to(uint))
+        }
+        return (80, 24)
+        #else
+        return (80, 24)
+        #end
+    }
+
+    /// Enables raw mode on the terminal and installs a `SIGWINCH` resize handler on POSIX.
+    + fn enter_raw_mode() !TuiError {
+        if this.raw_enabled : return
+        #if OS == "linux" || OS == "macos"
+        if isatty(this.in_fd) == 0 {
+            throw .not_a_tty { message: "Input descriptor is not a terminal" }
+        }
+        let orig = Termios {}
+        if tcgetattr(this.in_fd, @ref(orig)) != 0 {
+            throw .terminal_init { message: "tcgetattr failed" }
+        }
+        this.orig_termios = orig
+
+        let raw = Termios {}
+        if tcgetattr(this.in_fd, @ref(raw)) != 0 {
+            throw .terminal_init { message: "tcgetattr failed" }
+        }
+        #if OS == "linux"
+        raw.c_iflag = raw.c_iflag & ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON).to(u32)
+        raw.c_oflag = raw.c_oflag & ~OPOST.to(u32)
+        raw.c_lflag = raw.c_lflag & ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN).to(u32)
+        raw.c_cflag = (raw.c_cflag & ~(CSIZE | PARENB).to(u32)) | CS8.to(u32)
+        #else
+        raw.c_iflag = raw.c_iflag & ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON).to(u64)
+        raw.c_oflag = raw.c_oflag & ~OPOST.to(u64)
+        raw.c_lflag = raw.c_lflag & ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN).to(u64)
+        raw.c_cflag = (raw.c_cflag & ~(CSIZE | PARENB).to(u64)) | CS8.to(u64)
+        #end
+        raw.c_cc[VMIN] = 1
+        raw.c_cc[VTIME] = 0
+
+        if tcsetattr(this.in_fd, TCSAFLUSH, @ref(raw)) != 0 {
+            throw .terminal_init { message: "tcsetattr failed" }
+        }
+        this.raw_enabled = true
+
+        if !this.winch_installed {
+            @unsafe
+            let action = SigAction { handler: winch_handler.@cast(ptr) }
+            sigaction(SIGWINCH, @ref(action), null)
+            this.winch_installed = true
+        }
+        #elif OS == "win"
+        let hin = GetStdHandle(STD_INPUT_HANDLE)
+        let hout = GetStdHandle(STD_OUTPUT_HANDLE)
+        let in_mode: u32 = 0
+        let out_mode: u32 = 0
+        if GetConsoleMode(hin, @ref(in_mode)) == 0 {
+            throw .not_a_tty { message: "Standard input is not a Windows console" }
+        }
+        if GetConsoleMode(hout, @ref(out_mode)) == 0 {
+            throw .not_a_tty { message: "Standard output is not a Windows console" }
+        }
+        this.orig_in_mode = in_mode
+        this.orig_out_mode = out_mode
+
+        let raw_in = (in_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT).to(u32))
+            | ENABLE_VIRTUAL_TERMINAL_INPUT.to(u32)
+        let raw_out = out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.to(u32)
+        if SetConsoleMode(hin, raw_in) == 0 || SetConsoleMode(hout, raw_out) == 0 {
+            throw .terminal_init { message: "SetConsoleMode failed" }
+        }
+        this.raw_enabled = true
+        #else
+        throw .unsupported { message: "Raw mode is not supported on this platform" }
+        #end
+    }
+
+    /// Restores the saved terminal mode settings. Safe to call multiple times.
+    + fn leave_raw_mode() !TuiError {
+        if !this.raw_enabled : return
+        this.raw_enabled = false
+        #if OS == "linux" || OS == "macos"
+        let orig = this.orig_termios
+        if tcsetattr(this.in_fd, TCSAFLUSH, @ref(orig)) != 0 {
+            throw .terminal_init { message: "Failed to restore terminal attributes" }
+        }
+        #elif OS == "win"
+        let hin = GetStdHandle(STD_INPUT_HANDLE)
+        let hout = GetStdHandle(STD_OUTPUT_HANDLE)
+        SetConsoleMode(hin, this.orig_in_mode)
+        SetConsoleMode(hout, this.orig_out_mode)
+        #end
+    }
+
+    /// Reads the next event, waiting up to `timeout_ms` milliseconds.
+    + fn read_event(timeout_ms: uint) ?Event !TuiError {
+        // Check for queued parsed events first
+        let cached = this.parser.next()
+        if isset(cached) : return cached
+
+        // Check for terminal resize via SIGWINCH or dimension change
+        #if OS == "linux" || OS == "macos"
+        if winch_flag != 0 {
+            winch_flag = 0
+            let w, h = this.size()
+            if w != this.last_w || h != this.last_h {
+                this.last_w = w
+                this.last_h = h
+                return ResizeEvent { width: w, height: h }
+            }
+        }
+        #end
+
+        let start = time.mono_ms()
+        let read_buf = [u8]{ 0 x 256 }
+
+        while true {
+            let elapsed = time.mono_ms() - start
+            let remaining = timeout_ms > elapsed ? timeout_ms - elapsed : 0
+
+            // If we have a lone ESC byte waiting, cap wait to 25ms so Escape feels responsive
+            let wait_ms = remaining
+            if this.parser.has_pending() && wait_ms > 25 : wait_ms = 25
+
+            @unsafe
+            #if OS == "linux" || OS == "macos"
+            let pfd = PollFd {
+                fd: this.in_fd
+                events: POLLIN.to(i16)
+                revents: 0
+            }
+            let ready = poll(@ref(pfd), 1, wait_ms.to(i32))
+            if winch_flag != 0 {
+                winch_flag = 0
+                let w, h = this.size()
+                if w != this.last_w || h != this.last_h {
+                    this.last_w = w
+                    this.last_h = h
+                    return ResizeEvent { width: w, height: h }
+                }
+            }
+            if ready > 0 && (pfd.revents & POLLIN.to(i16)) != 0 {
+                let n = read(this.in_fd, read_buf.data, read_buf.length)
+                if n > 0 {
+                    this.parser.feed(read_buf.view(0, n.to(uint)))
+                    let ev = this.parser.next()
+                    if isset(ev) : return ev
+                    continue
+                }
+                if n < 0 : throw .io_error { message: "Failed to read terminal input" }
+                return null
+            }
+            #elif OS == "win"
+            let hin = GetStdHandle(STD_INPUT_HANDLE)
+            let res = WaitForSingleObject(hin, wait_ms.to(u32))
+            if res == 0 {
+                let n = _read(this.in_fd, read_buf.data, read_buf.length.to(u32))
+                if n > 0 {
+                    this.parser.feed(read_buf.view(0, n.to(uint)))
+                    let ev = this.parser.next()
+                    if isset(ev) : return ev
+                    continue
+                }
+                return null
+            }
+            #end
+
+            // Timeout or no data arrived: flush standalone ESC if pending
+            let esc = this.parser.flush_escape()
+            if isset(esc) : return esc
+
+            if time.mono_ms() - start >= timeout_ms : return null
+        }
+        return null
+    }
+}
+
+/// In-memory headless terminal backend for deterministic testing of rendering, diffs,
+/// events, resizing, and widgets without a real TTY.
++ class TestBackend is Backend {
+    /// Current simulated terminal width in columns.
+    + width: uint
+    /// Current simulated terminal height in rows.
+    + height: uint
+    /// Whether `enter_raw_mode()` is currently active.
+    + raw_mode: bool (false)
+    output: ByteBuffer
+    events: Array[Event]
+    event_index: uint (0)
+    parser: EventParser
+
+    /// Creates a `TestBackend` of `width` columns by `height` rows.
+    + static fn new(width: uint, height: uint) TestBackend {
+        return TestBackend {
+            width: width
+            height: height
+            output: ByteBuffer.new(1024)
+            events: Array[Event].new()
+            parser: EventParser.new()
+        }
+    }
+
+    /// Captures written ANSI output bytes into the in-memory output buffer.
+    + fn write(bytes: local &[u8]) !TuiError {
+        if bytes.length > 0 : this.output.write(bytes)
+    }
+
+    /// Returns the simulated `(width, height)`.
+    + fn size() (uint, uint) {
+        return (this.width, this.height)
+    }
+
+    /// Pops the next queued event, or returns `null` if the queue is empty.
+    + fn read_event(_timeout_ms: uint) ?Event !TuiError {
+        if this.event_index < this.events.length {
+            let ev = this.events[this.event_index]
+            this.event_index++
+            return ev
+        }
+        return null
+    }
+
+    /// Marks simulated raw mode as active.
+    + fn enter_raw_mode() !TuiError {
+        this.raw_mode = true
+    }
+
+    /// Marks simulated raw mode as inactive.
+    + fn leave_raw_mode() !TuiError {
+        this.raw_mode = false
+    }
+
+    /// Queues a typed `Event` to be returned by `read_event()`.
+    + fn push_event(ev: Event) {
+        this.events.append(ev)
+    }
+
+    /// Feeds raw ANSI input bytes through `EventParser` and queues all decoded events.
+    + fn push_input(raw: String) {
+        let parsed = EventParser.parse_string(raw)
+        each parsed as ev : this.events.append(ev)
+    }
+
+    /// Changes the simulated terminal size and queues a `ResizeEvent`.
+    + fn resize(width: uint, height: uint) {
+        this.width = width
+        this.height = height
+        this.events.append(ResizeEvent { width: width, height: height })
+    }
+
+    /// Returns all captured output written so far as a string without clearing it.
+    + fn written_string() String {
+        return this.output.to_string()
+    }
+
+    /// Returns all captured output written since the last call and clears the capture buffer.
+    + fn take_output() String {
+        let s = this.output.to_string()
+        this.output.clear()
+        return s
+    }
+
+    /// Clears the captured output buffer.
+    + fn clear_output() {
+        this.output.clear()
+    }
+}
+
+/// Hardware cursor position requested by a widget during rendering.
++ struct CursorPos {
+    /// 0-based column.
+    + x: uint
+    /// 0-based row.
+    + y: uint
+}
+
+/// Drawing surface passed to the callback of `Terminal.draw()`.
++ class Frame {
+    /// Full drawable area of the terminal (`Rect { x: 0, y: 0, width, height }`).
+    + area: Rect
+    /// Back buffer for the current frame.
+    + buffer: Buffer
+    /// Optional hardware cursor position to show after flushing this frame.
+    + cursor: ?CursorPos (null)
+
+    /// Renders `widget` into `area` on this frame's buffer.
+    + fn render(widget: Widget, area: Rect) {
+        widget.render(area, this.buffer)
+    }
+
+    /// Requests that the terminal cursor be shown at `(x, y)` after this frame is drawn.
+    + fn set_cursor(x: uint, y: uint) {
+        this.cursor = CursorPos { x: x, y: y }
+    }
+
+    /// Clears any cursor position request so the cursor remains hidden.
+    + fn hide_cursor() {
+        this.cursor = null
+    }
+}
+
+/// Double-buffered terminal controller that manages raw mode, screen modes, and diffed rendering.
+///
+/// Always pair terminal setup with `defer term.close()` so the user's shell is restored cleanly.
++ class Terminal {
+    /// Underlying terminal backend.
+    + backend: Backend
+    current: Buffer
+    previous: Buffer
+    out_buf: ByteBuffer
+    needs_full_redraw: bool (true)
+    /// Whether raw mode is currently enabled.
+    ~ raw_mode: bool (false)
+    /// Whether the alternate screen buffer is currently active.
+    ~ alt_screen: bool (false)
+    /// Whether the hardware cursor is currently hidden.
+    ~ cursor_hidden: bool (false)
+    /// Whether SGR 1006 mouse tracking is currently enabled.
+    ~ mouse_enabled: bool (false)
+    /// Whether bracketed paste mode is currently enabled.
+    ~ paste_enabled: bool (false)
+    /// Whether `close()` has been called.
+    ~ closed: bool (false)
+
+    /// Creates a `Terminal` backed by `backend`.
+    + static fn new(backend: Backend) Terminal {
+        let w, h = backend.size()
+        return Terminal {
+            backend: backend
+            current: Buffer.new(w, h)
+            previous: Buffer.new(w, h)
+            out_buf: ByteBuffer.new(4096)
+        }
+    }
+
+    /// Creates a `Terminal` backed by a real `AnsiBackend` on stdio.
+    + static fn stdio() Terminal {
+        return Terminal.new(AnsiBackend.new())
+    }
+
+    /// Returns the last rendered `Buffer` (useful for inspecting output in tests).
+    + get buffer: Buffer {
+        return this.previous
+    }
+
+    /// Returns the current terminal dimensions `(width, height)`.
+    + fn size() (uint, uint) {
+        return this.backend.size()
+    }
+
+    /// Enables raw mode on the backend.
+    + fn enter_raw_mode() !TuiError {
+        if this.raw_mode : return
+        this.backend.enter_raw_mode() !>
+        this.raw_mode = true
+    }
+
+    /// Restores cooked mode on the backend.
+    + fn leave_raw_mode() !TuiError {
+        if !this.raw_mode : return
+        this.raw_mode = false
+        this.backend.leave_raw_mode() !>
+    }
+
+    /// Switches to the alternate screen buffer (`ESC[?1049h`).
+    + fn enter_alt_screen() !TuiError {
+        if this.alt_screen : return
+        this.backend.write(SEQ_ENTER_ALT_SCREEN) !>
+        this.alt_screen = true
+        this.needs_full_redraw = true
+    }
+
+    /// Returns to the primary screen buffer (`ESC[?1049l`).
+    + fn leave_alt_screen() !TuiError {
+        if !this.alt_screen : return
+        this.alt_screen = false
+        this.backend.write(SEQ_LEAVE_ALT_SCREEN) !>
+    }
+
+    /// Hides the hardware cursor (`ESC[?25l`).
+    + fn hide_cursor() !TuiError {
+        if this.cursor_hidden : return
+        this.backend.write(SEQ_HIDE_CURSOR) !>
+        this.cursor_hidden = true
+    }
+
+    /// Shows the hardware cursor (`ESC[?25h`).
+    + fn show_cursor() !TuiError {
+        if !this.cursor_hidden : return
+        this.cursor_hidden = false
+        this.backend.write(SEQ_SHOW_CURSOR) !>
+    }
+
+    /// Enables SGR 1006 mouse press/release/drag/scroll reporting.
+    + fn enable_mouse() !TuiError {
+        if this.mouse_enabled : return
+        this.backend.write(SEQ_ENABLE_MOUSE) !>
+        this.mouse_enabled = true
+    }
+
+    /// Disables SGR 1006 mouse tracking.
+    + fn disable_mouse() !TuiError {
+        if !this.mouse_enabled : return
+        this.mouse_enabled = false
+        this.backend.write(SEQ_DISABLE_MOUSE) !>
+    }
+
+    /// Enables bracketed paste mode (`ESC[?2004h`).
+    + fn enable_bracketed_paste() !TuiError {
+        if this.paste_enabled : return
+        this.backend.write(SEQ_ENABLE_PASTE) !>
+        this.paste_enabled = true
+    }
+
+    /// Disables bracketed paste mode (`ESC[?2004l`).
+    + fn disable_bracketed_paste() !TuiError {
+        if !this.paste_enabled : return
+        this.paste_enabled = false
+        this.backend.write(SEQ_DISABLE_PASTE) !>
+    }
+
+    /// Convenience setup: enters raw mode, alternate screen, hides cursor, and enables
+    /// bracketed paste. Pair with `defer term.close()`.
+    + fn setup(mouse: bool (false)) !TuiError {
+        this.enter_raw_mode() !>
+        this.enter_alt_screen() ! {
+            this.close()
+            throw E
+        }
+        this.hide_cursor() ! {
+            this.close()
+            throw E
+        }
+        this.enable_bracketed_paste() ! {
+            this.close()
+            throw E
+        }
+        if mouse {
+            this.enable_mouse() ! {
+                this.close()
+                throw E
+            }
+        }
+    }
+
+    /// Restores every terminal mode enabled on this instance (mouse, paste, cursor,
+    /// alternate screen, style reset, and raw mode). Safe to call multiple times or in `defer`.
+    + fn close() {
+        if this.closed : return
+        this.closed = true
+        if this.mouse_enabled {
+            this.mouse_enabled = false
+            this.backend.write(SEQ_DISABLE_MOUSE) _
+        }
+        if this.paste_enabled {
+            this.paste_enabled = false
+            this.backend.write(SEQ_DISABLE_PASTE) _
+        }
+        this.backend.write(SEQ_RESET_STYLE) _
+        if this.cursor_hidden {
+            this.cursor_hidden = false
+            this.backend.write(SEQ_SHOW_CURSOR) _
+        }
+        if this.alt_screen {
+            this.alt_screen = false
+            this.backend.write(SEQ_LEAVE_ALT_SCREEN) _
+        }
+        if this.raw_mode {
+            this.raw_mode = false
+            this.backend.leave_raw_mode() _
+        }
+    }
+
+    /// Marks the terminal dirty so the next `draw()` clears the screen and performs a full redraw.
+    + fn clear() {
+        this.needs_full_redraw = true
+    }
+
+    /// Waits up to `timeout_ms` milliseconds for the next event from the backend.
+    ///
+    /// Automatically marks the buffers for a full redraw when a `ResizeEvent` arrives.
+    + fn read_event(timeout_ms: uint (0)) ?Event !TuiError {
+        let ev = this.backend.read_event(timeout_ms) !>
+        if isset(ev) {
+            let resize = ev.as_resize()
+            if isset(resize) {
+                this.needs_full_redraw = true
+            }
+        }
+        return ev
+    }
+
+    /// Renders one frame through `render_fn`, diffs against the previous frame, and flushes
+    /// only the changed cells and minimal ANSI style transitions in a single write.
+    + fn draw(render_fn: fn(Frame)()) !TuiError {
+        let w, h = this.backend.size()
+        let resized = w != this.current.width || h != this.current.height
+        if resized {
+            this.current.resize(w, h)
+            this.needs_full_redraw = true
+        } else {
+            this.current.clear()
+        }
+
+        let frame = Frame {
+            area: Rect.new(0, 0, w, h)
+            buffer: this.current
+        }
+        render_fn(frame)
+
+        this.out_buf.clear()
+        this.current.diff_to_ansi(this.previous, this.out_buf, this.needs_full_redraw)
+
+        let cursor = frame.cursor
+        if isset(cursor) {
+            this.out_buf.write("\x1b[")
+            this.out_buf.write_uint_ascii(cursor.y + 1)
+            this.out_buf.write_byte(';')
+            this.out_buf.write_uint_ascii(cursor.x + 1)
+            this.out_buf.write("H")
+            if this.cursor_hidden {
+                this.out_buf.write(SEQ_SHOW_CURSOR)
+                this.cursor_hidden = false
+            }
+        } else if !this.cursor_hidden && this.alt_screen {
+            this.out_buf.write(SEQ_HIDE_CURSOR)
+            this.cursor_hidden = true
+        }
+
+        if this.out_buf.length > 0 {
+            this.backend.write(this.out_buf.view(0, this.out_buf.length)) !>
+        }
+
+        this.previous.copy_from(this.current)
+        this.needs_full_redraw = false
+    }
+}

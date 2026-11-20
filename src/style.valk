@@ -1,0 +1,335 @@
+
+/// The representation of a terminal color.
++ enum ColorKind {
+    /// Terminal default foreground or background color.
+    reset
+    /// One of the 16 standard ANSI palette colors (`0..15`).
+    ansi
+    /// A 256-color palette index (`0..255`).
+    indexed
+    /// A 24-bit truecolor RGB value.
+    rgb
+}
+
+/// A terminal foreground or background color.
++ struct Color {
+    /// Which color representation is active.
+    + kind: ColorKind (.reset)
+    /// Palette index for `ansi` (`0..15`) or `indexed` (`0..255`).
+    + index: u8 (0)
+    /// Red channel for `rgb`.
+    + r: u8 (0)
+    /// Green channel for `rgb`.
+    + g: u8 (0)
+    /// Blue channel for `rgb`.
+    + b: u8 (0)
+
+    /// Returns the terminal default color.
+    + static fn reset() Color {
+        return Color {}
+    }
+
+    /// Returns one of the 16 standard ANSI colors (`0..15`).
+    + static fn ansi(code: u8) Color {
+        return Color { kind: .ansi, index: code & 15 }
+    }
+
+    /// Returns a 256-color palette color (`0..255`).
+    + static fn indexed(index: u8) Color {
+        return Color { kind: .indexed, index: index }
+    }
+
+    /// Returns a 24-bit truecolor RGB color.
+    + static fn rgb(r: u8, g: u8, b: u8) Color {
+        return Color { kind: .rgb, r: r, g: g, b: b }
+    }
+
+    /// Standard ANSI black (color 0).
+    + static fn black() Color { return Color.ansi(0) }
+    /// Standard ANSI red (color 1).
+    + static fn red() Color { return Color.ansi(1) }
+    /// Standard ANSI green (color 2).
+    + static fn green() Color { return Color.ansi(2) }
+    /// Standard ANSI yellow (color 3).
+    + static fn yellow() Color { return Color.ansi(3) }
+    /// Standard ANSI blue (color 4).
+    + static fn blue() Color { return Color.ansi(4) }
+    /// Standard ANSI magenta (color 5).
+    + static fn magenta() Color { return Color.ansi(5) }
+    /// Standard ANSI cyan (color 6).
+    + static fn cyan() Color { return Color.ansi(6) }
+    /// Standard ANSI white / light gray (color 7).
+    + static fn white() Color { return Color.ansi(7) }
+
+    /// Bright ANSI black / dark gray (color 8).
+    + static fn bright_black() Color { return Color.ansi(8) }
+    /// Bright ANSI red (color 9).
+    + static fn bright_red() Color { return Color.ansi(9) }
+    /// Bright ANSI green (color 10).
+    + static fn bright_green() Color { return Color.ansi(10) }
+    /// Bright ANSI yellow (color 11).
+    + static fn bright_yellow() Color { return Color.ansi(11) }
+    /// Bright ANSI blue (color 12).
+    + static fn bright_blue() Color { return Color.ansi(12) }
+    /// Bright ANSI magenta (color 13).
+    + static fn bright_magenta() Color { return Color.ansi(13) }
+    /// Bright ANSI cyan (color 14).
+    + static fn bright_cyan() Color { return Color.ansi(14) }
+    /// Bright ANSI white (color 15).
+    + static fn bright_white() Color { return Color.ansi(15) }
+
+    /// Returns whether this color is the terminal default (`ColorKind.reset`).
+    + fn is_reset() bool {
+        return this.kind == .reset
+    }
+
+    /// Returns an independent copy of this color.
+    + fn clone() Color {
+        return Color { kind: this.kind, index: this.index, r: this.r, g: this.g, b: this.b }
+    }
+
+    /// Returns whether two colors are equal.
+    + fn equals(other: Color) bool $eq {
+        if this.kind != other.kind : return false
+        if this.kind == .reset : return true
+        if this.kind == .ansi || this.kind == .indexed : return this.index == other.index
+        return this.r == other.r && this.g == other.g && this.b == other.b
+    }
+
+    fn write_sgr_params(out: ByteBuffer, is_bg: bool) {
+        if this.kind == .reset {
+            out.write(is_bg ? "49" : "39")
+            return
+        }
+        if this.kind == .ansi {
+            let idx = this.index.to(uint)
+            if idx < 8 {
+                out.write_uint_ascii((is_bg ? 40 : 30) + idx)
+            } else {
+                out.write_uint_ascii((is_bg ? 100 : 90) + (idx - 8))
+            }
+            return
+        }
+        if this.kind == .indexed {
+            out.write(is_bg ? "48;5;" : "38;5;")
+            out.write_uint_ascii(this.index.to(uint))
+            return
+        }
+        out.write(is_bg ? "48;2;" : "38;2;")
+        out.write_uint_ascii(this.r.to(uint))
+        out.write_byte(';')
+        out.write_uint_ascii(this.g.to(uint))
+        out.write_byte(';')
+        out.write_uint_ascii(this.b.to(uint))
+    }
+}
+
+/// Visual attributes for a terminal cell: foreground, background, and text modifiers.
++ struct Style {
+    /// Foreground color.
+    + fg: Color (.{})
+    /// Background color.
+    + bg: Color (.{})
+    /// Bold / increased intensity.
+    + bold: bool (false)
+    /// Dim / decreased intensity.
+    + dim: bool (false)
+    /// Italic text.
+    + italic: bool (false)
+    /// Underlined text.
+    + underline: bool (false)
+    /// Swapped foreground and background colors.
+    + reverse: bool (false)
+    /// Struck-through text.
+    + strikethrough: bool (false)
+
+    /// Returns an unstyled default `Style`.
+    + static fn default() Style {
+        return Style {}
+    }
+
+    /// Returns an independent copy of this style.
+    + fn clone() Style {
+        return Style {
+            fg: this.fg.clone()
+            bg: this.bg.clone()
+            bold: this.bold
+            dim: this.dim
+            italic: this.italic
+            underline: this.underline
+            reverse: this.reverse
+            strikethrough: this.strikethrough
+        }
+    }
+
+    /// Returns a copy with `fg` set to `color`.
+    + fn with_fg(color: Color) Style {
+        let s = this.clone()
+        s.fg = color.clone()
+        return s
+    }
+
+    /// Returns a copy with `bg` set to `color`.
+    + fn with_bg(color: Color) Style {
+        let s = this.clone()
+        s.bg = color.clone()
+        return s
+    }
+
+    /// Returns a copy with `bold` set.
+    + fn with_bold(on: bool (true)) Style {
+        let s = this.clone()
+        s.bold = on
+        return s
+    }
+
+    /// Returns a copy with `dim` set.
+    + fn with_dim(on: bool (true)) Style {
+        let s = this.clone()
+        s.dim = on
+        return s
+    }
+
+    /// Returns a copy with `italic` set.
+    + fn with_italic(on: bool (true)) Style {
+        let s = this.clone()
+        s.italic = on
+        return s
+    }
+
+    /// Returns a copy with `underline` set.
+    + fn with_underline(on: bool (true)) Style {
+        let s = this.clone()
+        s.underline = on
+        return s
+    }
+
+    /// Returns a copy with `reverse` set.
+    + fn with_reverse(on: bool (true)) Style {
+        let s = this.clone()
+        s.reverse = on
+        return s
+    }
+
+    /// Returns a copy with `strikethrough` set.
+    + fn with_strikethrough(on: bool (true)) Style {
+        let s = this.clone()
+        s.strikethrough = on
+        return s
+    }
+
+    /// Overlays non-default attributes of `other` onto `this` and returns the result.
+    + fn patch(other: Style) Style {
+        let s = this.clone()
+        if !other.fg.is_reset() : s.fg = other.fg.clone()
+        if !other.bg.is_reset() : s.bg = other.bg.clone()
+        if other.bold : s.bold = true
+        if other.dim : s.dim = true
+        if other.italic : s.italic = true
+        if other.underline : s.underline = true
+        if other.reverse : s.reverse = true
+        if other.strikethrough : s.strikethrough = true
+        return s
+    }
+
+    /// Returns whether every attribute is at its default value.
+    + fn is_default() bool {
+        return this.fg.is_reset() && this.bg.is_reset()
+            && !this.bold && !this.dim && !this.italic
+            && !this.underline && !this.reverse && !this.strikethrough
+    }
+
+    /// Returns whether two styles have identical colors and modifiers.
+    + fn equals(other: Style) bool $eq {
+        return this.fg.equals(other.fg) && this.bg.equals(other.bg)
+            && this.bold == other.bold && this.dim == other.dim
+            && this.italic == other.italic && this.underline == other.underline
+            && this.reverse == other.reverse && this.strikethrough == other.strikethrough
+    }
+
+    /// Writes a full ANSI SGR reset-and-apply sequence for this style into `out`.
+    + fn write_sgr(out: ByteBuffer) {
+        out.write("\x1b[0")
+        if this.bold : out.write(";1")
+        if this.dim : out.write(";2")
+        if this.italic : out.write(";3")
+        if this.underline : out.write(";4")
+        if this.reverse : out.write(";7")
+        if this.strikethrough : out.write(";9")
+        if !this.fg.is_reset() {
+            out.write_byte(';')
+            this.fg.write_sgr_params(out, false)
+        }
+        if !this.bg.is_reset() {
+            out.write_byte(';')
+            this.bg.write_sgr_params(out, true)
+        }
+        out.write_byte('m')
+    }
+
+    /// Writes the minimal ANSI SGR sequence transitioning from `prev` to `this`.
+    ///
+    /// Writes nothing when `this == prev`.
+    + fn write_sgr_diff(prev: Style, out: ByteBuffer) {
+        if this.equals(prev) : return
+        if this.is_default() {
+            out.write("\x1b[0m")
+            return
+        }
+
+        out.write("\x1b[")
+        let first = true
+
+        // Turning off bold or dim uses SGR 22, which resets both.
+        let reset_intensity = (prev.bold && !this.bold) || (prev.dim && !this.dim)
+        if reset_intensity {
+            write_sgr_sep(out, first)
+            first = false
+            out.write("22")
+        }
+        if this.bold && (!prev.bold || reset_intensity) {
+            write_sgr_sep(out, first)
+            first = false
+            out.write("1")
+        }
+        if this.dim && (!prev.dim || reset_intensity) {
+            write_sgr_sep(out, first)
+            first = false
+            out.write("2")
+        }
+        if this.italic != prev.italic {
+            write_sgr_sep(out, first)
+            first = false
+            out.write(this.italic ? "3" : "23")
+        }
+        if this.underline != prev.underline {
+            write_sgr_sep(out, first)
+            first = false
+            out.write(this.underline ? "4" : "24")
+        }
+        if this.reverse != prev.reverse {
+            write_sgr_sep(out, first)
+            first = false
+            out.write(this.reverse ? "7" : "27")
+        }
+        if this.strikethrough != prev.strikethrough {
+            write_sgr_sep(out, first)
+            first = false
+            out.write(this.strikethrough ? "9" : "29")
+        }
+        if !this.fg.equals(prev.fg) {
+            write_sgr_sep(out, first)
+            first = false
+            this.fg.write_sgr_params(out, false)
+        }
+        if !this.bg.equals(prev.bg) {
+            write_sgr_sep(out, first)
+            this.bg.write_sgr_params(out, true)
+        }
+        out.write_byte('m')
+    }
+}
+
+fn write_sgr_sep(out: ByteBuffer, first: bool) {
+    if !first : out.write_byte(';')
+}

@@ -1,0 +1,78 @@
+use valk.time
+
+/// Elm/MVC-style application interface driven by `run_app()`.
++ interface App {
+    /// Processes an incoming `Event` (key, mouse, resize, paste, or tick).
+    ///
+    /// Return `true` to continue running or `false` to exit the event loop cleanly.
+    + fn update(event: Event) bool;
+    /// Draws the current application state into `frame`.
+    + fn view(frame: Frame);
+}
+
+/// Configuration options for `run_app()`.
++ class AppOptions {
+    /// Tick interval in milliseconds (`0` disables periodic `TickEvent`s).
+    + tick_ms: uint (100)
+    /// Whether `run_app()` should enter raw mode, alternate screen, hide cursor, and
+    /// restore everything automatically on exit. Set to `false` for custom or headless setups.
+    + manage_terminal: bool (true)
+    /// Whether to enable SGR 1006 mouse tracking when `manage_terminal` is true.
+    + mouse: bool (false)
+    /// Maximum number of loop iterations (`0` means unlimited; useful for bounded headless tests).
+    + max_iterations: uint (0)
+}
+
+/// Runs an Elm/MVC-style `App` loop on `term`, handling events, periodic ticks, and diffed redraws.
+///
+/// When `options.manage_terminal` is `true` (the default), calls `term.setup(options.mouse)`
+/// and restores the terminal via `defer term.close()` on exit.
++ fn run_app(term: Terminal, app: App, options: AppOptions (AppOptions{})) !TuiError {
+    if options.manage_terminal {
+        term.setup(options.mouse) !>
+        defer term.close()
+    }
+
+    term.draw(fn(frame: Frame) {
+        app.view(frame)
+    }) !>
+
+    let last_tick = time.mono_ms()
+    let iterations: uint = 0
+
+    while true {
+        if options.max_iterations > 0 && iterations >= options.max_iterations : break
+        iterations++
+
+        let wait_ms: uint = 50
+        if options.tick_ms > 0 {
+            let now = time.mono_ms()
+            let elapsed = now - last_tick
+            wait_ms = elapsed < options.tick_ms ? options.tick_ms - elapsed : 0
+        }
+
+        let ev = term.read_event(wait_ms) !>
+        let dirty = false
+
+        if isset(ev) {
+            if !app.update(ev) : break
+            dirty = true
+        }
+
+        if options.tick_ms > 0 {
+            let now = time.mono_ms()
+            let elapsed = now - last_tick
+            if elapsed >= options.tick_ms {
+                last_tick = now
+                if !app.update(TickEvent { elapsed_ms: elapsed }) : break
+                dirty = true
+            }
+        }
+
+        if dirty {
+            term.draw(fn(frame: Frame) {
+                app.view(frame)
+            }) !>
+        }
+    }
+}

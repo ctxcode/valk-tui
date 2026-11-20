@@ -1,0 +1,210 @@
+use tui
+
+test "Color and Style minimal SGR transitions" {
+    let out = ByteBuffer.new(64)
+
+    // Same style produces zero bytes
+    let s1 = tui.Style.default().with_fg(tui.Color.red()).with_bold()
+    s1.write_sgr_diff(s1, out)
+    assert(out.length == 0)
+
+    // Default -> bold red fg
+    s1.write_sgr_diff(tui.Style.default(), out)
+    assert(out.to_string() == "\x1b[1;31m")
+
+    // Bold red -> bold green (only fg changes, bold is NOT re-emitted)
+    out.clear()
+    let s2 = tui.Style.default().with_fg(tui.Color.green()).with_bold()
+    s2.write_sgr_diff(s1, out)
+    assert(out.to_string() == "\x1b[32m")
+
+    // 256-color and 24-bit RGB
+    out.clear()
+    let s3 = tui.Style.default()
+        .with_fg(tui.Color.indexed(208))
+        .with_bg(tui.Color.rgb(10, 20, 30))
+        .with_italic()
+        .with_underline()
+    s3.write_sgr_diff(tui.Style.default(), out)
+    assert(out.to_string() == "\x1b[3;4;38;5;208;48;2;10;20;30m")
+
+    // Transition back to default emits single reset
+    out.clear()
+    tui.Style.default().write_sgr_diff(s3, out)
+    assert(out.to_string() == "\x1b[0m")
+
+    // Turning off bold while keeping dim re-applies dim after SGR 22
+    out.clear()
+    let both = tui.Style.default().with_bold().with_dim()
+    let only_dim = tui.Style.default().with_dim()
+    only_dim.write_sgr_diff(both, out)
+    assert(out.to_string() == "\x1b[22;2m")
+}
+
+test "Rect geometry helpers" {
+    let r = tui.Rect.new(2, 3, 10, 6)
+    assert(!r.is_empty())
+    assert(r.right() == 12 && r.bottom() == 9 && r.area() == 60)
+    assert(r.contains(2, 3))
+    assert(r.contains(11, 8))
+    assert(!r.contains(12, 8))
+    assert(!r.contains(1, 3))
+
+    let inner = r.inner(1, 2)
+    assert(inner == tui.Rect.new(3, 5, 8, 2))
+
+    let collapsed = r.inner(20, 20)
+    assert(collapsed.is_empty())
+
+    let other = tui.Rect.new(8, 5, 10, 10)
+    let inter = r.intersection(other)
+    assert(inter == tui.Rect.new(8, 5, 4, 4))
+
+    let disjoint = r.intersection(tui.Rect.new(50, 50, 5, 5))
+    assert(disjoint.is_empty())
+}
+
+test "Buffer clipping and wide character handling" {
+    let buf = tui.Buffer.new(6, 2)
+    let style = tui.Style.default()
+
+    // Out-of-bounds writes are safely clipped
+    buf.set_cell(10, 0, "X", style)
+    buf.set_cell(0, 10, "X", style)
+    assert(buf.row_text(0) == "      ")
+
+    // Wide CJK characters occupy 2 cells each; 3rd char fits, 4th clipped
+    let written = buf.set_string(0, 0, "中文日本", style)
+    assert(written == 6)
+    assert(buf.row_text(0) == "中文日")
+
+    // Trailing cell of a wide char is marked skip
+    let c0 = buf.get(0, 0) ?! { assert(false) return }
+    let c1 = buf.get(1, 0) ?! { assert(false) return }
+    assert(c0.symbol == "中" && !c0.skip)
+    assert(c1.skip)
+
+    // Overwriting the trailing half of a wide char clears its leading half cleanly
+    buf.set_cell(1, 0, "A", style)
+    let after0 = buf.get(0, 0) ?! { assert(false) return }
+    let after1 = buf.get(1, 0) ?! { assert(false) return }
+    assert(after0.symbol == " " && !after0.skip)
+    assert(after1.symbol == "A" && !after1.skip)
+
+    // Wide char at the rightmost column does not overflow and becomes a space
+    buf.set_cell(5, 1, "中", style)
+    let edge = buf.get(5, 1) ?! { assert(false) return }
+    assert(edge.symbol == " " && !edge.skip)
+}
+
+test "Diffed rendering emits minimal ANSI updates and full clear on resize" {
+    let backend = tui.TestBackend.new(10, 3)
+    let term = tui.Terminal.new(backend)
+
+    // First draw: full clear + initial text
+    term.draw(fn(f: tui.Frame) {
+        f.buffer.set_string(0, 0, "Hello", tui.Style.default())
+        f.buffer.set_string(0, 1, "World", tui.Style.default())
+    }) ! { assert(false) return }
+
+    let out1 = backend.take_output()
+    assert(out1.contains("\x1b[2J"))
+    assert(out1.contains("Hello"))
+    assert(out1.contains("World"))
+    assert(term.buffer.row_text(0) == "Hello     ")
+    assert(term.buffer.row_text(1) == "World     ")
+
+    // Identical second draw: ZERO bytes emitted!
+    term.draw(fn(f: tui.Frame) {
+        f.buffer.set_string(0, 0, "Hello", tui.Style.default())
+        f.buffer.set_string(0, 1, "World", tui.Style.default())
+    }) ! { assert(false) return }
+
+    let out2 = backend.take_output()
+    assert(out2 == "")
+
+    // Single-cell change at (4, 0): only cursor move + single char!
+    term.draw(fn(f: tui.Frame) {
+        f.buffer.set_string(0, 0, "Hell!", tui.Style.default())
+        f.buffer.set_string(0, 1, "World", tui.Style.default())
+    }) ! { assert(false) return }
+
+    let out3 = backend.take_output()
+    assert(out3 == "\x1b[1;5H!")
+    assert(!out3.contains("\x1b[2J"))
+
+    // Resize triggers full clear + redraw at new dimensions
+    backend.resize(12, 4)
+    let ev = term.read_event(0) ! { assert(false) return }
+    let r = ev ?! { assert(false) return }
+    let rev = r.as_resize() ?! { assert(false) return }
+    assert(rev.width == 12 && rev.height == 4)
+
+    term.draw(fn(f: tui.Frame) {
+        assert(f.area.width == 12 && f.area.height == 4)
+        f.buffer.set_string(0, 0, "Resized", tui.Style.default())
+    }) ! { assert(false) return }
+
+    let out4 = backend.take_output()
+    assert(out4.contains("\x1b[2J"))
+    assert(out4.contains("Resized"))
+    assert(term.buffer.width == 12 && term.buffer.height == 4)
+}
+
+test "Terminal setup, modes, cursor, and guaranteed close cleanup" {
+    let backend = tui.TestBackend.new(20, 5)
+    let term = tui.Terminal.new(backend)
+
+    term.setup(true) ! { assert(false) return }
+    assert(backend.raw_mode)
+    let setup_out = backend.take_output()
+    assert(setup_out.contains("\x1b[?1049h"))
+    assert(setup_out.contains("\x1b[?25l"))
+    assert(setup_out.contains("\x1b[?2004h"))
+    assert(setup_out.contains("\x1b[?1006h"))
+
+    // Frame cursor placement shows cursor at 1-based (4, 3) for 0-based (3, 2)
+    term.draw(fn(f: tui.Frame) {
+        f.set_cursor(3, 2)
+    }) ! { assert(false) return }
+    let cur_out = backend.take_output()
+    assert(cur_out.contains("\x1b[3;4H"))
+    assert(cur_out.contains("\x1b[?25h"))
+
+    // close() restores all modes cleanly and is idempotent
+    term.close()
+    assert(!backend.raw_mode)
+    let close_out = backend.take_output()
+    assert(close_out.contains("\x1b[?1006l"))
+    assert(close_out.contains("\x1b[?2004l"))
+    assert(close_out.contains("\x1b[?1049l"))
+
+    // Calling close() a second time does nothing
+    term.close()
+    assert(backend.take_output() == "")
+}
+
+test "Style builders do not mutate original style and adjacent diff skips cursor moves" {
+    let base = tui.Style.default().with_fg(tui.Color.cyan())
+    let patched = base.patch(tui.Style.default().with_bold().with_reverse())
+    assert(!base.bold && !base.reverse)
+    assert(patched.fg == tui.Color.cyan() && patched.bold && patched.reverse)
+
+    let backend = tui.TestBackend.new(10, 2)
+    let term = tui.Terminal.new(backend)
+    term.draw(fn(_f: tui.Frame) {}) ! { assert(false) return }
+    backend.take_output()
+
+    // Writing "AB" at (2, 0) should emit a single cursor move to (row 1, col 3), NOT two!
+    term.draw(fn(f: tui.Frame) {
+        f.buffer.set_string(2, 0, "AB", tui.Style.default())
+    }) ! { assert(false) return }
+    assert(backend.take_output() == "\x1b[1;3HAB")
+
+    // Changing only the style of 'A' emits minimal SGR + 'A' + reset
+    term.draw(fn(f: tui.Frame) {
+        f.buffer.set_cell(2, 0, "A", tui.Style.default().with_bold())
+        f.buffer.set_cell(3, 0, "B", tui.Style.default())
+    }) ! { assert(false) return }
+    assert(backend.take_output() == "\x1b[1;3H\x1b[1mA\x1b[0m")
+}
