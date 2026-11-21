@@ -13,13 +13,6 @@ Namespaces: [main](#main)
 alias ProgressBar for Gauge
 ```
 
-## Errors for 'main'
-
-```js
-// Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
-+ error TuiError (not_a_tty, terminal_init, io_error, unsupported) payload { message: String }
-```
-
 ## Enums for 'main'
 
 ```js
@@ -884,6 +877,19 @@ alias ProgressBar for Gauge
 + class TickEvent {
     // Milliseconds elapsed since the previous tick.
     + elapsed_ms: uint
+}
+```
+
+```js
+// Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
++ union TuiError {
+    not_a_tty(String)
+    terminal_init(String)
+    io_error(String)
+    unsupported(String)
+
+    + get message: String
+    + fn to_string() String
 }
 ```
 

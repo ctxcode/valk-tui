@@ -264,7 +264,7 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
     + fn write(bytes: local &[u8]) !TuiError {
         if bytes.length == 0 : return
         if this.out_fd == 1 {
-            io.write_all(io.stdout(), bytes) ! throw .io_error { message: "Failed to write to stdout" }
+            io.write_all(io.stdout(), bytes) ! throw .io_error("Failed to write to stdout")
             return
         }
         @unsafe
@@ -277,7 +277,7 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
             #else
             let written = write(this.out_fd, bytes.data + offset, total - offset)
             #end
-            if written <= 0 : throw .io_error { message: "Failed to write to terminal descriptor" }
+            if written <= 0 : throw .io_error("Failed to write to terminal descriptor")
             offset += written.to(uint)
         }
     }
@@ -312,17 +312,17 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
         if this.raw_enabled : return
         #if OS == "linux" || OS == "macos"
         if isatty(this.in_fd) == 0 {
-            throw .not_a_tty { message: "Input descriptor is not a terminal" }
+            throw .not_a_tty("Input descriptor is not a terminal")
         }
         let orig = Termios {}
         if tcgetattr(this.in_fd, @ref(orig)) != 0 {
-            throw .terminal_init { message: "tcgetattr failed" }
+            throw .terminal_init("tcgetattr failed")
         }
         this.orig_termios = orig
 
         let raw = Termios {}
         if tcgetattr(this.in_fd, @ref(raw)) != 0 {
-            throw .terminal_init { message: "tcgetattr failed" }
+            throw .terminal_init("tcgetattr failed")
         }
         #if OS == "linux"
         raw.c_iflag = raw.c_iflag & ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON).to(u32)
@@ -339,7 +339,7 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
         raw.c_cc[VTIME] = 0
 
         if tcsetattr(this.in_fd, TCSAFLUSH, @ref(raw)) != 0 {
-            throw .terminal_init { message: "tcsetattr failed" }
+            throw .terminal_init("tcsetattr failed")
         }
         this.raw_enabled = true
 
@@ -355,10 +355,10 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
         let in_mode: u32 = 0
         let out_mode: u32 = 0
         if GetConsoleMode(hin, @ref(in_mode)) == 0 {
-            throw .not_a_tty { message: "Standard input is not a Windows console" }
+            throw .not_a_tty("Standard input is not a Windows console")
         }
         if GetConsoleMode(hout, @ref(out_mode)) == 0 {
-            throw .not_a_tty { message: "Standard output is not a Windows console" }
+            throw .not_a_tty("Standard output is not a Windows console")
         }
         this.orig_in_mode = in_mode
         this.orig_out_mode = out_mode
@@ -367,11 +367,11 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
             | ENABLE_VIRTUAL_TERMINAL_INPUT.to(u32)
         let raw_out = out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING.to(u32)
         if SetConsoleMode(hin, raw_in) == 0 || SetConsoleMode(hout, raw_out) == 0 {
-            throw .terminal_init { message: "SetConsoleMode failed" }
+            throw .terminal_init("SetConsoleMode failed")
         }
         this.raw_enabled = true
         #else
-        throw .unsupported { message: "Raw mode is not supported on this platform" }
+        throw .unsupported("Raw mode is not supported on this platform")
         #end
     }
 
@@ -382,7 +382,7 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
         #if OS == "linux" || OS == "macos"
         let orig = this.orig_termios
         if tcsetattr(this.in_fd, TCSAFLUSH, @ref(orig)) != 0 {
-            throw .terminal_init { message: "Failed to restore terminal attributes" }
+            throw .terminal_init("Failed to restore terminal attributes")
         }
         #elif OS == "win"
         let hin = GetStdHandle(STD_INPUT_HANDLE)
@@ -447,7 +447,7 @@ extern fn _write(fd: i32, buf: ptr, size: u32) int;
                     if isset(ev) : return ev
                     continue
                 }
-                if n < 0 : throw .io_error { message: "Failed to read terminal input" }
+                if n < 0 : throw .io_error("Failed to read terminal input")
                 return null
             }
             #elif OS == "win"

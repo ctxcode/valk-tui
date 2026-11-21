@@ -297,3 +297,17 @@ test "Table default auto widths inside a Block" {
     assert(buf.row_text(2).contains("env") && buf.row_text(2).contains("prod"))
     assert(buf.row_text(3) == "└──────────────┘")
 }
+
+test "TuiError tagged union variants and string conversion" {
+    let e1 = tui.TuiError.not_a_tty("not a tty")
+    let e2 = tui.TuiError.terminal_init("init failed")
+    let e3 = tui.TuiError.io_error("write failed")
+    let e4 = tui.TuiError.unsupported("no support")
+
+    assert(e1.message == "not a tty" && e1.to_string() == "not a tty")
+    assert(e2.message == "init failed" && e2.to_string() == "init failed")
+    assert(e3.message == "write failed" && e3.to_string() == "write failed")
+    assert(e4.message == "no support" && e4.to_string() == "no support")
+    assert(match e1 : bool { .not_a_tty(m) => m == "not a tty" default => false })
+    assert(match e3 : bool { .io_error(m) => m == "write failed" default => false })
+}

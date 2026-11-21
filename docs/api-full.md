@@ -13,22 +13,6 @@ Namespaces: [main](#main)
 alias ProgressBar for Gauge
 ```
 
-## Errors for 'main'
-
-```js
-// Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
-+ error TuiError (not_a_tty, terminal_init, io_error, unsupported) payload { message: String }
-```
-
-### TuiError
-
-Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
-
-- `not_a_tty`: the file descriptor is not connected to a terminal.
-- `terminal_init`: setting up or restoring raw mode failed.
-- `io_error`: reading from or writing to the terminal failed.
-- `unsupported`: the operation is not supported on this platform.
-
 ## Enums for 'main'
 
 ```js
@@ -2352,6 +2336,28 @@ Emitted periodically by `run_app` when a tick interval elapses.
 #### elapsed_ms
 
 Milliseconds elapsed since the previous tick.
+
+```js
+// Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
++ union TuiError {
+    not_a_tty(String)
+    terminal_init(String)
+    io_error(String)
+    unsupported(String)
+
+    + get message: String
+    + fn to_string() String
+}
+```
+
+### TuiError
+
+Thrown by terminal operations when raw mode, terminal queries, or I/O fail.
+
+- `not_a_tty(message)`: the file descriptor is not connected to a terminal.
+- `terminal_init(message)`: setting up or restoring raw mode failed.
+- `io_error(message)`: reading from or writing to the terminal failed.
+- `unsupported(message)`: the operation is not supported on this platform.
 
 ```js
 // Interface implemented by all renderable UI components.

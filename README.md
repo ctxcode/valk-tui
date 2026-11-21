@@ -2,7 +2,7 @@
 
 Pure-Valk terminal UI library built on top of stdlib `valk.ansi` — with raw mode, ANSI/xterm/kitty input parsing, double-buffered diffed rendering, a constraint layout solver, core widgets, and a headless `TestBackend`.
 
-Requires Valk 0.8.10 or newer.
+Requires Valk 0.9.1 or newer.
 
 ## Install
 
